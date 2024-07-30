@@ -1,0 +1,36 @@
+(block blocka) (block blockb) (block blockc) (block blockd)
+(on-top blockb blocka) (on-top blockc blockb) (on-top blockd blockc) (free-top blockd)
+
+0: move-to-gnd blockc blockd
+-> (on-top blockb blocka) (on-top blockc blockb) (free-top blockd) (free-top blockc)
+
+1: move-to-gnd blockb blockc
+-> (on-top blockb blocka)  (free-top blockd) (free-top blockc) (free-top blockb)
+
+2: move-to-gnd blocka blockb
+->   (free-top blockd) (free-top blockc) (free-top blockb) (free-top blocka)
+
+
+
+
+
+
+
+
+
+
+
+
+
+2nd run
+(block blocka) (block blockb) (block blockc) (block blockd)
+(on-top blockb blocka) (on-top blockc blockb) (on-top blockd blockc) (free-top blockd)
+a -> b -> c | d
+0: move-to-gnd blockc blockd
+-> (on-top blockb blocka) (on-top blockc blockb) (free-top blockd) (free-top blockc)
+a -> b  | c -> d
+1: move-to-blck blockb blockc blockd
+-> (on-top blockb blocka)  (free-top blockc) (on-top blockc blockd) (free-top blockb)
+a | b -> c -> d
+1: move-to-blck blocka blockb blockc
+->   (on-top blockb blockc) (on-top blockc blockd) (free-top blockb) (free-top blocka)
