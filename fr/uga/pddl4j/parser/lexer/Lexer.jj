@@ -1,0 +1,5001 @@
+/*
+ * Copyright (c) 2010 by Damien Pellier <Damien.Pellier@imag.fr>.
+ *
+ * This file is part of PDDL4J library.
+ *
+ * PDDL4J is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * PDDL4J is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with PDDL4J.  If not, see <http://www.gnu.org/licenses/>
+ */
+
+options {
+    STATIC=false;
+    IGNORE_CASE=true;
+}
+
+PARSER_BEGIN(Lexer)
+
+package fr.uga.pddl4j.parser.lexer;
+
+import fr.uga.pddl4j.parser.ErrorManager;
+import fr.uga.pddl4j.parser.DefaultParsedProblem;
+import fr.uga.pddl4j.parser.Connector;
+import fr.uga.pddl4j.parser.ParsedDerivedPredicate;
+import fr.uga.pddl4j.parser.Parser;
+import fr.uga.pddl4j.parser.Expression;
+import fr.uga.pddl4j.parser.ParsedDomain;
+import fr.uga.pddl4j.parser.ParsedProblem;
+import fr.uga.pddl4j.parser.NamedTypedList;
+import fr.uga.pddl4j.parser.ParsedAction;
+import fr.uga.pddl4j.parser.ParsedMethod;
+import fr.uga.pddl4j.parser.RequireKey;
+import fr.uga.pddl4j.parser.Symbol;
+import fr.uga.pddl4j.parser.ParsedTaskNetwork;
+import fr.uga.pddl4j.parser.TimeSpecifier;
+import fr.uga.pddl4j.parser.TypedSymbol;
+import fr.uga.pddl4j.parser.SymbolType;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
+public class Lexer {
+
+	private static final int PRIMITIVE_TYPE = 0;
+	private static final int VARIABLE = 1;
+	private static final int CONSTANT = 2;
+	private static final int TERM = 3;
+	private static final int ATOMIC_FUNCTION_SKELETON = 4;
+	private static final int PARSER_DOMAIN = 5;
+	private static final int PARSER_PROBLEM = 6;
+
+	private ParsedDomain domain = null;
+	public ParsedDomain getDomain() { return this.domain; }
+
+	private ParsedProblem problem = null;
+	public ParsedProblem getProblem() { return this.problem; }
+
+    private File file;
+	public File getFile() { return this.file; }
+	public void setFile(File file) { this.file = file; }
+
+	private ErrorManager mgr;
+	public ErrorManager getErrorManager() { return this.mgr; }
+	public void setErrorManager(ErrorManager mgr) { this.mgr = mgr; }
+
+	private void error(Throwable e, int line, int column) {
+		String message = new String();
+		if (e.getClass().equals(TokenMgrError.class)) {
+			String[] tmp = e.getMessage().split(" ");
+			int l = -1;
+			int c = -1;
+			int i = 0;
+  			for (i = 0 ; i < tmp.length; i++) {
+  				if (tmp[i].equals("line") && i+1 < tmp.length) {
+  					l = Integer.parseInt(tmp[i+1].substring(0, tmp[i+1].length()-1));
+  				}
+  				if (tmp[i].equals("column") && i+1 < tmp.length) {
+  					c = Integer.parseInt(tmp[i+1].substring(0, tmp[i+1].length()-1));
+  				}
+  			}
+			message = e.getMessage().split(".  ")[1];
+			this.mgr.logLexicalError(message, this.file, l, c);
+		} else if (e.getClass().equals(ParseException.class)) {
+  			ParseException pe = (ParseException) e;
+  			message = generateErrorMesssage(pe);
+  			this.mgr.logLexicalError(message, this.file,
+  				pe.currentToken.beginLine, pe.currentToken.beginColumn);
+  		}
+  		this.skipToNextBlock();
+	}
+
+	public boolean isRequirement(RequireKey key) {
+		if (domain != null && this.problem != null) {
+			return this.domain.getRequirements().contains(key)
+			|| this.problem.getRequirements().contains(key);
+		} else if (domain != null && this.problem == null) {
+			return this.domain.getRequirements().contains(key);
+		} else if (problem != null && this.domain == null) {
+			return this.problem.getRequirements().contains(key);
+		} else {
+			return false;
+		}
+	}
+
+	public Set<RequireKey> getRequirements() {
+		return this.domain.getRequirements();
+	}
+
+	private void skipToNextBlock() {
+		Token t1;
+		Token t2;
+		do {
+  			t1 = getNextToken();
+  			t2 = getToken(2);
+  		} while (t1.kind != EOF
+  			&& t2 != null
+	  		&& t2.kind != REQUIREMENTS
+	  		&& t2.kind != PREDICATES
+	  		&& t2.kind != TYPES
+	  		&& t2.kind != CONSTANTS
+	  		&& t2.kind != FUNCTIONS
+	  		&& t2.kind != ACTION
+	  		&& t2.kind != DURATIVE_ACTION
+	  		&& t2.kind != DERIVED
+	  		&& t2.kind != OBJECTS
+	  		&& t2.kind != INIT
+	  		&& t2.kind != GOAL
+  			&& t2.kind != METRIC
+  			&& t2.kind != EOF);
+	}
+
+	private String generateErrorMesssage(ParseException pe) {
+        StringBuffer expected = new StringBuffer();
+        boolean expectedSeq = false;
+        int maxSize = 0;
+        for (int i = 0; i < pe.expectedTokenSequences.length; i++) {
+            if (maxSize < pe.expectedTokenSequences[i].length) {
+                maxSize = pe.expectedTokenSequences[i].length;
+            }
+            for (int j = 0; j < pe.expectedTokenSequences[i].length; j++) {
+                expected.append(pe.tokenImage[pe.expectedTokenSequences[i][j]]).append(" ");
+                expectedSeq = true;
+            }
+            if (pe.expectedTokenSequences[i][pe.expectedTokenSequences[i].length - 1] != 0) {
+                expected.append("...");
+            }
+            if (i < pe.expectedTokenSequences.length - 1) {
+                expected.append("\n").append("    ");
+            }
+        }
+        String retval = "unexpected token \"" + pe.currentToken.next.image + "\".";
+        if (expectedSeq) {
+        	if (pe.expectedTokenSequences.length == 1) {
+            	retval += "\nWas expecting:" + "\n" + "    ";
+        	} else {
+            	retval += "\nWas expecting one of:" + "\n" + "    ";
+        	}
+        	retval += expected.toString();
+        }
+        return retval;
+    }
+
+}
+
+PARSER_END(Lexer)
+
+
+SKIP :
+{
+	" "
+| 	"\t"
+|	"\n"
+| 	"\r"
+}
+MORE :
+{
+	"//" : IN_SINGLE_LINE_COMMENT
+|	";" : IN_SINGLE_LINE_COMMENT
+|	<"/**" ~["/"]> { input_stream.backup(1); } : IN_FORMAL_COMMENT
+|	"/*" : IN_MULTI_LINE_COMMENT
+}
+<IN_SINGLE_LINE_COMMENT>
+	SPECIAL_TOKEN : {
+		<SINGLE_LINE_COMMENT: "\n" | "\r" | "\r\n" > : DEFAULT
+	}
+<IN_FORMAL_COMMENT>
+	SPECIAL_TOKEN :	{
+		<FORMAL_COMMENT: "*/" > : DEFAULT
+	}
+<IN_MULTI_LINE_COMMENT>
+	SPECIAL_TOKEN : {
+		<MULTI_LINE_COMMENT: "*/" > : DEFAULT
+	}
+<IN_SINGLE_LINE_COMMENT,IN_FORMAL_COMMENT,IN_MULTI_LINE_COMMENT>
+	MORE : {
+		< ~[] >
+}
+
+TOKEN :
+{
+  	< LEFT_BRACKET: "(">
+| 	< RIGHT_BRACKET: ")">
+|   < ALIAS : "@" >
+}
+
+TOKEN : {
+	< DEFINE : "define" >
+|	< DOMAIN : "domain" >
+|	< REQUIREMENTS : ":requirements" >
+|	< TYPES : ":types" >
+|	< EITHER : "either" >
+|	< CONSTANTS : ":constants" >
+|	< PREDICATES : ":predicates" >
+|	< FUNCTIONS : ":functions" >
+|	< ACTION : ":action" >
+|	< PARAMETERS : ":parameters" >
+|	< PRECONDITION : ":precondition" >
+|	< EFFECT : ":effect" >
+|	< PREFERENCE : "preference" >
+|	< WHEN : "when" >
+|	< DURATIVE_ACTION : ":durative-action" >
+|	< DURATION : ":duration" >
+|	< CONDITION : ":condition" >
+|	< DERIVED : ":derived" >
+|	< PROBLEM : "problem" >
+|	< P_DOMAIN : ":domain" >
+|	< OBJECTS	: ":objects" >
+|	< INIT : ":init" >
+|	< GOAL: ":goal" >
+|	< METRIC : ":metric" >
+|   < METHOD : ":method" > // ADD HDDL
+|   < TASK : ":task" > // ADD HDDL
+|   < ORDERED_SUBTASKS : ":ordered-subtasks" > // ADD HDDL
+|   < ORDERED_TASKS : ":ordered-tasks" > // ADD HDDL
+|   < TASKS : ":tasks" > // ADD HDDL
+|   < SUBTASKS : ":subtasks" > // ADD HDDL
+|   < ORDERING : ":ordering" > // ADD HDDL
+|	< DURATIVE_METHOD : ":durative-method" > // ADD HDDL2.1
+}
+
+TOKEN : {
+	< STRIPS : ":strips" >
+|	< TYPING : ":typing" >
+|	< NEGATIVE_PRECONDITIONS : ":negative-preconditions" >
+|	< DISJUNCTIVE_PRECONDITIONS : ":disjunctive-preconditions" >
+|	< EQUALITY : ":equality" >
+|	< EXISTENTIAL_PRECONDITIONS : ":existential-preconditions" >
+|	< UNIVERSAL_PRECONDITIONS : ":universal-preconditions" >
+|	< QUANTIFIED_PRECONDITIONS : ":quantified-preconditions" >
+|	< CONDITIONAL_EFFECTS : ":conditional-effects" >
+|	< ACTION_COSTS : ":action-costs" >
+|   < FLUENTS : ":fluents" >
+|   < NUMERIC_FLUENTS : ":numeric-fluents" >
+|   < OBJECT_FLUENTS : ":object-fluents" >
+|   < GOAL_UTILITIES : ":goal-utilities" >
+|	< ADL : ":adl" >
+|	< DURATIVE_ACTIONS : ":durative-actions" >
+|	< DERIVED_PREDICATES : ":derived-predicates" >
+|	< TIMED_INITIAL_LITERALS : ":timed-initial-literals" >
+|	< PREFERENCES : ":preferences" >
+|	< CONSTRAINTS : ":constraints" >
+|	< CONTINUS_EFFECTS : ":continus-effects" >
+|	< DURATION_INEQUALITIES : ":duration-inequalities" >
+|	< HIERARCHY : ":hierarchy" > // ADD HDDL
+|	< HTN : ":htn" > // ADD HDDL
+|   < METHOD_PRECONDITIONS : ":method-preconditions" > // ADD HDDL
+|   < METHOD_CONSTRAINTS : ":method-constraints" > // ADD HDDL2.1
+}
+
+TOKEN :
+{
+	< GREAT : ">" >
+|	< LESS : "<" >
+|	< GEQUAL : ">=" >
+|	< LEQUAL : "<=" >
+|	< EQUAL : "=" >
+}
+
+TOKEN :
+{
+	< MUL : "*" >
+|	< DIV : "/" >
+|	< ADD : "+" >
+|	< SUB : "-" >
+}
+
+TOKEN :
+{
+	<ASSIGN : "assign" >
+|	<SCALE_UP : "scale-up" >
+|	<SCALE_DOWN : "scale-down" >
+|	<INCREASE : "increase" >
+|	<DECREASE : "decrease" >
+}
+
+TOKEN :
+{
+    < OR : "or" >
+|   < AND : "and" >
+|   < IMPLY : "imply" >
+| 	< NOT : "not" >
+|	< FORALL : "forall" >
+|	< EXISTS : "exists" >
+}
+
+TOKEN :
+{
+	< ALWAYS : "always" >
+|	< SOMETIME : "sometime" >
+|	< WITHIN : "within" >
+|	< AT_MOST_ONCE : "at-most-once" >
+|	< SOMETIME_AFTER : "sometime-after" >
+|	< SOMETIME_BEFORE : "sometime-before" >
+|	< ALWAYS_WITHIN : "always-within" >
+|	< HOLD_DURING : "hold-during" >
+|	< HOLD_AFTER : "hold-after" >
+|	< HOLD_BEFORE : "hold-before" >
+|	< HOLD_BETWEEN : "hold-between" >
+|	< AT: "at" >
+|	< START : "start">
+|	< END : "end">
+|	< OVER : "over">
+|	< ALL : "all">
+|	< TOTAL_TIME : "total-time" >
+|	< TOTAL_COST : "total-cost" >
+|	< MAXIMIZE : "maximize" >
+|	< MINIMIZE : "minimize" >
+|	< IS_VIOLATED : "is-violated" >
+
+}
+
+TOKEN :
+{
+	< VAR_DURATION : "?duration" >
+|	< CONTINUOUS_VARIABLE : "#t" >
+|	< F_DURATION : "duration" > // ADD HDDL2.1
+}
+
+TOKEN :
+{
+	< NUMBER_TYPE : "number" >
+|	< OBJECT_TYPE : "object" >
+}
+
+
+TOKEN :
+{
+	< VARIABLE_SYMBOL : ("?" <LETTER> (<LETTER> | <SEPARATOR> | <DIGIT>)*) >
+|	< SYMBOL : ((<LETTER> (<LETTER> | "-" | <DIGIT>)*)) >
+|	< NUMBER :  (<DIGIT>)+ ("." (<DIGIT>)*)? >
+|	< #DIGIT : ["0"-"9"] >
+|	< #LETTER : ["a"-"z","A"-"Z","_"] >
+|	< #SEPARATOR : ["_","-"] >
+}
+
+Token right_bracket() :
+{
+	Token t = null;
+}
+{
+	t=<RIGHT_BRACKET> { return t;}
+}
+
+Token left_bracket() :
+{
+	Token t = null;
+}
+{
+	t=<LEFT_BRACKET> { return t;}
+}
+
+ParsedDomain domain() :
+{
+	Expression<String> exp = null;
+	Symbol<String> name = null;
+}
+{
+	try {
+		<LEFT_BRACKET> <DEFINE> <LEFT_BRACKET> <DOMAIN>
+			name=domain_name() {
+				this.domain = new DefaultParsedProblem(name);
+			}
+		right_bracket()
+		[LOOKAHEAD(2) require_def(Lexer.PARSER_DOMAIN)]
+		[LOOKAHEAD(2, { this.isRequirement(RequireKey.TYPING)}) type_def() ]
+		[LOOKAHEAD(2) constants_def()]
+		[LOOKAHEAD(2) predicates_def()]
+		[LOOKAHEAD(2, {
+			this.isRequirement(RequireKey.FLUENTS)
+			|| this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+			|| this.isRequirement(RequireKey.OBJECT_FLUENTS)
+			|| this.isRequirement(RequireKey.ACTION_COSTS)
+		}) functions_def()]
+		[LOOKAHEAD(2, { this.isRequirement(RequireKey.CONSTRAINTS)}) pddl_const(Lexer.PARSER_DOMAIN)]
+		(structure_def())+
+		right_bracket()
+		<EOF>
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+	{
+	    return this.domain;
+    }
+}
+
+ParsedProblem domain_and_problem() :
+{
+	Expression<String> exp = null;
+	Symbol<String> name = null;
+}
+{
+	try {
+    	<LEFT_BRACKET> <DEFINE> <LEFT_BRACKET> <DOMAIN>
+            name=domain_name() {
+                this.domain = new DefaultParsedProblem(name);
+            }
+        <RIGHT_BRACKET>
+        [LOOKAHEAD(2) require_def(Lexer.PARSER_DOMAIN)]
+        [LOOKAHEAD(2, { this.isRequirement(RequireKey.TYPING)}) type_def() ]
+        [LOOKAHEAD(2) constants_def()]
+        [LOOKAHEAD(2) predicates_def()]
+        [LOOKAHEAD(2, {
+            this.isRequirement(RequireKey.FLUENTS)
+            || this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+            || this.isRequirement(RequireKey.OBJECT_FLUENTS)
+            || this.isRequirement(RequireKey.ACTION_COSTS)
+        }) functions_def()]
+        [LOOKAHEAD(2, { this.isRequirement(RequireKey.CONSTRAINTS)}) pddl_const(Lexer.PARSER_DOMAIN)]
+        (structure_def())+
+        <RIGHT_BRACKET>
+    	//Problem file
+    	problem()
+    } catch(Throwable e) {
+    	this.error(e, token.beginLine, token.beginColumn);
+    }
+    {
+        return new DefaultParsedProblem(this.domain, this.problem);
+    }
+}
+
+void require_def(int type) :
+{
+	Token t = null;
+	Set<RequireKey> requirements = null;
+	if (type == Lexer.PARSER_DOMAIN) {
+		this.domain.addRequirement(RequireKey.STRIPS);
+	}
+}
+{
+	try {
+		t=left_bracket() <REQUIREMENTS>
+			(requirements=require_key() {
+				if (type == Lexer.PARSER_DOMAIN) {
+					for (RequireKey r : requirements) {
+						this.domain.addRequirement(r);
+					}
+				} else {
+					for (RequireKey r : requirements) {
+						this.problem.addRequirement(r);
+					}
+				}
+			})+ right_bracket()
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+Set<RequireKey> require_key() :
+{
+	Set<RequireKey> requirements = new LinkedHashSet<RequireKey>();
+}
+{
+	(	<STRIPS> {
+			requirements.add(RequireKey.STRIPS);
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	| 	<TYPING> {
+			requirements.add(RequireKey.TYPING);
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	| 	<NEGATIVE_PRECONDITIONS> {
+			requirements.add(RequireKey.NEGATIVE_PRECONDITIONS);
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	|	<DISJUNCTIVE_PRECONDITIONS> {
+			requirements.add(RequireKey.DISJUNCTIVE_PRECONDITIONS);
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	|	<EQUALITY> {
+			requirements.add(RequireKey.EQUALITY);
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	|	<EXISTENTIAL_PRECONDITIONS> {
+			requirements.add(RequireKey.EXISTENTIAL_PRECONDITIONS);
+			if (requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)) {
+				requirements.add(RequireKey.QUANTIFIED_PRECONDITIONS);
+			}
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	|	<UNIVERSAL_PRECONDITIONS> {
+			requirements.add(RequireKey.UNIVERSAL_PRECONDITIONS);
+			if (requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)) {
+				requirements.add(RequireKey.QUANTIFIED_PRECONDITIONS);
+			}
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	|	<QUANTIFIED_PRECONDITIONS> {
+			requirements.add(RequireKey.QUANTIFIED_PRECONDITIONS);
+			requirements.add(RequireKey.UNIVERSAL_PRECONDITIONS);
+			requirements.add(RequireKey.EXISTENTIAL_PRECONDITIONS);
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	|	<CONDITIONAL_EFFECTS> {
+			requirements.add(RequireKey.CONDITIONAL_EFFECTS);
+			if (requirements.contains(RequireKey.STRIPS)
+					&& requirements.contains(RequireKey.TYPING)
+					&& requirements.contains(RequireKey.NEGATIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EQUALITY)
+					&& requirements.contains(RequireKey.QUANTIFIED_PRECONDITIONS)
+					&& requirements.contains(RequireKey.UNIVERSAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.EXISTENTIAL_PRECONDITIONS)
+					&& requirements.contains(RequireKey.CONDITIONAL_EFFECTS)) {
+				requirements.add(RequireKey.ADL);
+			}
+		}
+	|	<FLUENTS> {
+			requirements.add(RequireKey.FLUENTS);
+			requirements.add(RequireKey.NUMERIC_FLUENTS);
+			requirements.add(RequireKey.OBJECT_FLUENTS);
+		}
+	|	<NUMERIC_FLUENTS> {
+			requirements.add(RequireKey.NUMERIC_FLUENTS);
+			if (requirements.contains(RequireKey.OBJECT_FLUENTS)) {
+				requirements.add(RequireKey.FLUENTS);
+			}
+		}
+	|	<OBJECT_FLUENTS> {
+			requirements.add(RequireKey.OBJECT_FLUENTS);
+			if (requirements.contains(RequireKey.NUMERIC_FLUENTS)) {
+				requirements.add(RequireKey.FLUENTS);
+			}
+		}
+	|	<GOAL_UTILITIES> {
+			requirements.add(RequireKey.GOAL_UTILITIES);
+		}
+	|	<ADL> {
+			requirements.add(RequireKey.ADL);
+			requirements.add(RequireKey.STRIPS);
+			requirements.add(RequireKey.TYPING);
+			requirements.add(RequireKey.NEGATIVE_PRECONDITIONS);
+			requirements.add(RequireKey.DISJUNCTIVE_PRECONDITIONS);
+			requirements.add(RequireKey.EQUALITY);
+			requirements.add(RequireKey.UNIVERSAL_PRECONDITIONS);
+			requirements.add(RequireKey.EXISTENTIAL_PRECONDITIONS);
+			requirements.add(RequireKey.CONDITIONAL_EFFECTS);
+		}
+	|	<ACTION_COSTS> {
+			requirements.add(RequireKey.ACTION_COSTS);
+		}
+	|	<DURATIVE_ACTIONS> {
+			requirements.add(RequireKey.DURATIVE_ACTIONS);
+			requirements.add(RequireKey.DURATION_INEQUALITIES);
+		}
+	|	<DERIVED_PREDICATES> {
+			requirements.add(RequireKey.DERIVED_PREDICATES);
+		}
+	| 	<TIMED_INITIAL_LITERALS> {
+			requirements.add(RequireKey.TIMED_INITIAL_LITERALS);
+		}
+	|	<PREFERENCES> {
+			requirements.add(RequireKey.PREFERENCES);
+		}
+	|	<CONSTRAINTS> {
+			requirements.add(RequireKey.CONSTRAINTS);
+		}
+	|	<CONTINUS_EFFECTS> {
+			requirements.add(RequireKey.CONTINOUS_EFFECTS);
+		}
+	|	<DURATION_INEQUALITIES> {
+			requirements.add(RequireKey.DURATION_INEQUALITIES);
+		}
+	|	<HIERARCHY> { // ADD HDDL
+    		requirements.add(RequireKey.HIERARCHY);
+        }
+    |   <METHOD_PRECONDITIONS> { // ADD HDDL
+            requirements.add(RequireKey.METHOD_PRECONDITIONS);
+        }
+    |   <METHOD_CONSTRAINTS> { // ADD HDDL 2.1
+            requirements.add(RequireKey.METHOD_CONSTRAINTS);
+        }
+)
+	{ return requirements; }
+}
+
+
+void type_def():
+{
+	List<TypedSymbol<String>> typedList = null;
+}
+{
+	try {
+		left_bracket() <TYPES>
+			typedList=typed_list(Lexer.PRIMITIVE_TYPE)
+		right_bracket()  {
+			for (TypedSymbol<String> type : typedList) {
+				this.domain.addType(type);
+			}
+			for (TypedSymbol<String> type : this.domain.getTypes()) {
+				if (type.getTypes().isEmpty()
+				        && !type.equals(Symbol.OBJECT_TYPE)
+				        && !type.equals(Symbol.NUMBER_TYPE)) {
+					type.addType(Symbol.OBJECT_TYPE);
+				}
+			}
+		}
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+List<TypedSymbol<String>> typed_list(int kind) :
+{
+	Symbol<String> t;
+	List<Symbol<String>> types = null;
+	List<TypedSymbol<String>> typedList = new ArrayList<TypedSymbol<String>>();
+	List<Symbol<String>> tmp = new ArrayList<Symbol<String>>();
+	List<TypedSymbol<String>> nextTypedList = null;
+}
+{
+    (   LOOKAHEAD(2)
+        left_bracket() right_bracket()
+	|   LOOKAHEAD(2, {kind == Lexer.PRIMITIVE_TYPE})
+			(t=primitive_type() {
+				tmp.add(t);
+			})*
+			(LOOKAHEAD(1, { this.isRequirement(RequireKey.TYPING)})
+				<SUB> types=type() nextTypedList=typed_list(kind))? {
+				if (types == null) {
+					types = new ArrayList<Symbol<String>>();
+				}
+				for (Symbol<String> s : tmp) {
+					TypedSymbol<String> ts = new TypedSymbol<String>(s);
+					for (Symbol<String> type : types) {
+						ts.addType(type);
+					}
+					typedList.add(ts);
+				}
+				if (nextTypedList != null) {
+					typedList.addAll(nextTypedList);
+				}
+			}
+	|	LOOKAHEAD(2, {kind == Lexer.CONSTANT})
+			(t=constant() {
+				tmp.add(t);
+			})*
+			(LOOKAHEAD(1, { this.isRequirement(RequireKey.TYPING)})
+				<SUB> types=type() nextTypedList=typed_list(kind))? {
+				if (types == null) {
+					types = new ArrayList<Symbol<String>>();
+				}
+				for (Symbol<String> s : tmp) {
+					TypedSymbol<String> ts = new TypedSymbol<String>(s);
+					for (Symbol<String> type : types) {
+						ts.addType(type);
+					}
+					typedList.add(ts);
+				}
+				if (nextTypedList != null) {
+					typedList.addAll(nextTypedList);
+				}
+			}
+	|	LOOKAHEAD(2, {kind == Lexer.VARIABLE})
+			(t=variable() {
+				tmp.add(t);
+			})*
+			(LOOKAHEAD(1, { this.isRequirement(RequireKey.TYPING)})
+				<SUB> types=type() nextTypedList=typed_list(kind))? {
+				if (types == null) {
+					types = new ArrayList<Symbol<String>>();
+					types.add(Symbol.OBJECT_TYPE);
+				}
+				for (Symbol<String> s : tmp) {
+					TypedSymbol<String> ts = new TypedSymbol<String>(s);
+					for (Symbol<String> type : types) {
+						ts.addType(type);
+					}
+					typedList.add(ts);
+				}
+				if (nextTypedList != null) {
+					typedList.addAll(nextTypedList);
+				}
+			}
+	) {
+		return typedList;
+	}
+}
+
+List<Symbol<String>> type() :
+{
+	Symbol<String> s;
+	List<Symbol<String>> type = new ArrayList<Symbol<String>>();
+}
+{
+	(	left_bracket() <EITHER>
+		(LOOKAHEAD(2) s=primitive_type() {
+			type.add(s);
+		})+
+	right_bracket()
+	|	s=primitive_type() {
+		type.add(s);
+	}) {
+		return type;
+	}
+}
+
+Symbol<String> primitive_type() :
+{
+	Token t = token;
+}
+{
+(	t=<OBJECT_TYPE>
+|	t=<NUMBER_TYPE>
+| 	t=<SYMBOL>) {
+	    return new Symbol<String>(SymbolType.TYPE, t.image.toLowerCase(),
+	        t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+    }
+}
+
+void constants_def() :
+{
+	List<TypedSymbol<String>> typedList = null;
+}
+{
+	try {
+		left_bracket() <CONSTANTS>
+			typedList=typed_list(Lexer.CONSTANT)
+		right_bracket() {
+			for (TypedSymbol<String> constant : typedList) {
+			    if (constant.getTypes().isEmpty()) {
+			    	constant.addType(Symbol.OBJECT_TYPE);
+			    }
+			    this.domain.addConstant(constant);
+			}
+		}
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+Symbol<String> constant() :
+{
+	Token t;
+}
+{
+	(	t=<SYMBOL>
+	|	t=<AT>
+	| 	t=<END>
+	| 	t=<START>
+	| 	t=<OVER>) {
+	return new Symbol<String>(SymbolType.CONSTANT, t.image.toLowerCase(),
+	    t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+}
+}
+
+void predicates_def() :
+{
+	NamedTypedList predicate = null;
+}
+{
+	try {
+		left_bracket() <PREDICATES>
+			(LOOKAHEAD(2) predicate=atomic_formula_skeleton() {
+				this.domain.addPredicate(predicate);
+			})+
+		right_bracket()
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+NamedTypedList comp_task_def() : // ADD HDDL
+{
+    NamedTypedList taskID;
+}
+{
+    <LEFT_BRACKET> <TASK> taskID=task_def() <RIGHT_BRACKET> {
+        return taskID;
+    }
+}
+
+NamedTypedList task_def() : // ADD HDDL
+{
+    Symbol<String> name;
+    List<TypedSymbol<String>> typedList = null;
+}
+{
+    name=task_symbol()
+    <PARAMETERS>
+    left_bracket()
+    typedList=typed_list(Lexer.VARIABLE)
+    <RIGHT_BRACKET> {
+        NamedTypedList l = new NamedTypedList(name);
+        for (TypedSymbol<String> s : typedList) {
+            l.add(s);
+        }
+        return l;
+    }
+}
+
+Symbol<String> task_symbol() : // ADD HDDL
+ {
+ 	Token t = token;
+ }
+ {
+ 	t=<SYMBOL> {
+ 		return new Symbol<String>(SymbolType.TASK, t.image.toLowerCase(),
+ 		 t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+ 	}
+ }
+
+
+NamedTypedList atomic_formula_skeleton() :
+{
+	Symbol<String> predicate = null;
+	List<TypedSymbol<String>> typedList = null;
+}
+{
+	<LEFT_BRACKET>
+		predicate=predicate()
+		typedList=typed_list(Lexer.VARIABLE)
+	<RIGHT_BRACKET> {
+		NamedTypedList l = new NamedTypedList(predicate);
+		for (TypedSymbol<String> s : typedList) {
+			l.add(s);
+		}
+		return l;
+	}
+}
+
+Symbol<String> predicate() :
+{
+	Token t;
+}
+{
+	(t=<SYMBOL>
+| 	t=<AT>
+| 	t=<END>
+| 	t=<START>
+| 	t=<OVER>) {
+		return new Symbol<String>(SymbolType.PREDICATE, t.image.toLowerCase(),
+		 t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+Symbol<String> variable() :
+{
+	Token t = token;
+}
+{
+	t=<VARIABLE_SYMBOL> {
+	    return new Symbol<String>(SymbolType.VARIABLE, t.image.toLowerCase(),
+	        t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+void functions_def():
+{
+	List<NamedTypedList> functions = null;
+}
+{
+	try {
+		left_bracket() <FUNCTIONS>
+			functions=function_typed_list(Lexer.ATOMIC_FUNCTION_SKELETON)
+		right_bracket() {
+			for (NamedTypedList function: functions) {
+				this.domain.addFunction(function);
+			}
+		}
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+NamedTypedList atomic_function_skeleton() :
+{
+	Symbol<String> functor = null;
+	List<TypedSymbol<String>> typedList = null;
+}
+{
+	<LEFT_BRACKET>
+		functor=functor()
+		typedList=typed_list(Lexer.VARIABLE)
+	<RIGHT_BRACKET>
+	{
+		NamedTypedList l = new NamedTypedList(functor);
+		for (TypedSymbol<String> s : typedList) {
+			l.add(s);
+		}
+		return l;
+	}
+}
+
+Symbol<String> functor() :
+{
+	Token t;
+}
+{
+	( t=<SYMBOL>
+	| t=<TOTAL_COST>
+	| t=<AT>
+	| t=<END>
+    | t=<START>
+    | t=<OVER>) {
+	    return new Symbol<String>(SymbolType.FUNCTOR, t.image.toLowerCase(),
+	        t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+List<NamedTypedList> function_typed_list(int type) :
+{
+	NamedTypedList namedTypedList = null;
+	List<NamedTypedList> typedListList = new ArrayList<NamedTypedList>();
+	List<NamedTypedList> nextNamedTypedList = null;
+	List<Symbol<String>> typeList = null;
+}
+{
+	(LOOKAHEAD(2) namedTypedList=atomic_function_skeleton() {
+		typedListList.add(namedTypedList);
+	})*
+	(<SUB> typeList=function_type() {
+			for (Symbol<String> t : typeList) {
+				namedTypedList.addType(t);
+			}
+		}
+		nextNamedTypedList=function_typed_list(type) {
+			typedListList.addAll(nextNamedTypedList);
+		}
+	)?
+	{
+		// To keep compatibility with PDDL 3.0: if no type is set it is number
+		for (NamedTypedList ntl : typedListList) {
+			if (ntl.getTypes().isEmpty()) {
+				ntl.addType(Symbol.NUMBER_TYPE);
+			}
+		}
+		return typedListList;
+	}
+}
+
+List<Symbol<String>> function_type() :
+{
+	Token t;
+	Symbol<String> symbol;
+	List<Symbol<String>> typesList = new ArrayList<Symbol<String>>();
+}
+{
+		LOOKAHEAD(2, {this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+			|| this.isRequirement(RequireKey.FLUENTS)
+			|| this.isRequirement(RequireKey.ACTION_COSTS)})
+		t=<NUMBER_TYPE> {
+			typesList.add(new Symbol<String>(SymbolType.TYPE, t.image.toLowerCase(),
+			    t.beginLine, t.beginColumn, t.endLine, t.endColumn));
+			return typesList;
+		}
+	| 	LOOKAHEAD(2, {(this.isRequirement(RequireKey.TYPING) && this.isRequirement(RequireKey.OBJECT_FLUENTS))
+        	                    || this.isRequirement(RequireKey.FLUENTS)})
+		    typesList=type() {
+		        return typesList;
+        }
+}
+
+Expression<String> con_gd() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=and_con_gd()
+	|	LOOKAHEAD(2) exp=forall_con_gd()
+	|	LOOKAHEAD(2) exp=at_end_con_gd()
+	|	LOOKAHEAD(2) exp=always_con_gd()
+	|	LOOKAHEAD(2) exp=sometime_con_gd()
+	|	LOOKAHEAD(2) exp=within_con_gd()
+	|	LOOKAHEAD(2) exp=at_most_once_con_gd()
+	|	LOOKAHEAD(2) exp=sometime_after_con_gd()
+	|	LOOKAHEAD(2) exp=sometime_before_con_gd()
+	|	LOOKAHEAD(2) exp=always_within_con_gd()
+	|	LOOKAHEAD(2) exp=hold_during_con_gd()
+	|	LOOKAHEAD(2) exp=hold_after_con_gd()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> and_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.AND);
+	Expression<String> child = null;
+	Token begin = null;
+	Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <AND>
+		(LOOKAHEAD(2) child=con_gd() {
+			conGD.addChild(child);
+		})*
+	end=<RIGHT_BRACKET>
+	{
+		conGD.setBegin(begin);
+		conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> forall_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.FORALL);
+	Expression<String> child = null;
+	List<TypedSymbol<String>> typedList = null;
+	Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <FORALL>
+		<LEFT_BRACKET>
+			typedList=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		child=con_gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.setQuantifiedVariables(typedList);
+		conGD.addChild(child);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> at_end_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.AT_END);
+	Expression<String> exp = null;
+	Token begin = null;
+    Token end = null;
+}
+{
+		begin=<LEFT_BRACKET> <AT> <END>
+			exp=gd()
+		end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(exp);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> always_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.ALWAYS_CONSTRAINT);
+	Expression<String> exp = null;
+	Token begin = null;
+    Token end = null;
+
+}
+{
+	begin=<LEFT_BRACKET> <ALWAYS>
+		exp=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(exp);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> sometime_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.SOMETIME_CONSTRAINT);
+	Expression<String> exp = null;
+	Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <SOMETIME>
+		exp=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(exp);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> within_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.WITHIN_CONSTRAINT);
+	Expression<String> exp, time;
+    Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <WITHIN>
+		time=number()
+		exp=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(time);
+		conGD.addChild(exp);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> at_most_once_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.AT_MOST_ONCE_CONSTRAINT);
+	Expression<String> exp;
+    Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT_MOST_ONCE>
+		exp=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(exp);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> sometime_after_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.SOMETIME_AFTER_CONSTRAINT);
+	Expression<String> gd1 = null;
+	Expression<String> gd2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <SOMETIME_AFTER>
+		gd1=gd()
+		gd2=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(gd1);
+		conGD.addChild(gd2);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> sometime_before_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.SOMETIME_BEFORE_CONSTRAINT);
+	Expression<String> gd1 = null;
+	Expression<String> gd2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <SOMETIME_BEFORE>
+		gd1=gd()
+		gd2=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(gd1);
+		conGD.addChild(gd2);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> always_within_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.ALWAYS_WITHIN_CONSTRAINT);
+	Expression<String> gd1, gd2, time;
+    Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <ALWAYS_WITHIN>
+		time=number()
+		gd1=gd()
+		gd2=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(time);
+		conGD.addChild(gd1);
+		conGD.addChild(gd2);
+		return conGD;
+	}
+}
+
+Expression<String> hold_during_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.HOLD_DURING_CONSTRAINT);
+	Expression<String> exp, lower, upper;
+    Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <HOLD_DURING>
+		lower=number()
+		upper=number()
+		exp=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(lower);
+		conGD.addChild(upper);
+		conGD.addChild(exp);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> hold_after_con_gd() :
+{
+	Expression<String> conGD = new Expression<String>(Connector.HOLD_AFTER_CONSTRAINT);
+	Expression<String> exp, time;
+    Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <HOLD_AFTER>
+		time=number()
+		exp=gd()
+	end=<RIGHT_BRACKET>
+	{
+		conGD.addChild(time);
+		conGD.addChild(exp);
+		conGD.setBegin(begin);
+        conGD.setEnd(end);
+		return conGD;
+	}
+}
+
+Expression<String> gd() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2)
+			exp=atomic_formula(Lexer.TERM)
+	|	LOOKAHEAD(2)
+			exp=and_gd()
+	|	LOOKAHEAD(2, {this.isRequirement(RequireKey.DISJUNCTIVE_PRECONDITIONS)})
+			exp=or_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.NEGATIVE_PRECONDITIONS)})
+			exp=not_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.DISJUNCTIVE_PRECONDITIONS)
+				&& this.isRequirement(RequireKey.NEGATIVE_PRECONDITIONS)})
+			exp=imply_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.EXISTENTIAL_PRECONDITIONS)})
+			exp=exists_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.UNIVERSAL_PRECONDITIONS)})
+			exp=forall_gd()
+	| 	LOOKAHEAD(3, { this.isRequirement(RequireKey.EQUALITY)})
+			exp=equal_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.FLUENTS)
+			|| this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+			|| this.isRequirement(RequireKey.OBJECT_FLUENTS)})
+			exp=f_comp()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> equal_gd() :
+{
+	Expression<String> exp = null;
+}
+{
+	(LOOKAHEAD(2)
+		exp=not_equal_atomic_formula()
+|	LOOKAHEAD(2)
+		exp=equal_atomic_formula()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> not_equal_atomic_formula() :
+{
+	Expression<String> exp = new Expression<String>(Connector.NOT);
+	Expression<String> c = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET>
+		<NOT>
+		c=equal_gd()
+	end=<RIGHT_BRACKET> {
+	 	exp.addChild(c);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> equal_atomic_formula() :
+{
+	Expression<String> exp = new Expression<String>(Connector.EQUAL_ATOM);
+	List<Symbol<String>> args = new ArrayList<Symbol<String>>();
+	Token t = null;
+	Symbol<String> arg1 = null;
+	Symbol<String> arg2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> t=<EQUAL>
+		arg1=term()
+		arg2=term()
+	end=<RIGHT_BRACKET> {
+        exp.setSymbol(new Symbol<String>(SymbolType.FUNCTOR, t.image.toLowerCase(),
+            t.beginLine, t.beginColumn, t.endLine, t.endColumn));
+	 	args.add(arg1);
+	 	args.add(arg2);
+	 	exp.setArguments(args);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> and_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> s = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <AND> (LOOKAHEAD(2) s=gd() {
+		exp.addChild(s);
+	})*
+	end=<RIGHT_BRACKET>
+	{
+        exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> or_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.OR);
+	Expression<String> s = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <OR> (LOOKAHEAD(2) s=gd() {
+		exp.addChild(s);
+	})*
+	end=<RIGHT_BRACKET>
+	{
+        exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> not_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.NOT);
+	Expression<String> s = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <NOT> s=gd() end=<RIGHT_BRACKET>
+	{
+		exp.addChild(s);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> imply_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.IMPLY);
+	Expression<String> p = null;
+	Expression<String> q = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <IMPLY> p=gd() q=gd() end=<RIGHT_BRACKET>
+	{
+		exp.addChild(p);
+		exp.addChild(q);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> exists_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.EXISTS);
+	List<TypedSymbol<String>> typedList = null;
+	Expression<String> s = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <EXISTS>
+		<LEFT_BRACKET>
+			typedList=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		s=gd()
+	end=<RIGHT_BRACKET> {
+		exp.setQuantifiedVariables(typedList);
+		exp.addChild(s);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> forall_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FORALL);
+	List<TypedSymbol<String>> typedList = null;
+	Expression<String> s = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <FORALL>
+		<LEFT_BRACKET>
+			typedList=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		s=gd()
+	end=<RIGHT_BRACKET> {
+		exp.setQuantifiedVariables(typedList);
+		exp.addChild(s);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> atomic_formula(int type) :
+{
+	Expression<String> exp = new Expression<String>(Connector.ATOM);
+	List<Symbol<String>> args = new ArrayList<Symbol<String>>();
+	Symbol<String> t = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> t=predicate() {
+		exp.setSymbol(t);
+	}
+	(LOOKAHEAD({ type == Lexer.CONSTANT } ) (t=constant() {
+			args.add(t);
+		})*
+	| LOOKAHEAD({ type == Lexer.TERM }) (t=term() {
+			args.add(t);
+		})*
+	) end=<RIGHT_BRACKET> {
+		exp.setArguments(args);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Symbol<String> term() :
+{
+	Symbol<String> t = null;
+}
+{
+	(	t=constant()
+	|	t=variable()
+	) {
+		return t;
+	}
+}
+
+Expression<String> literal(int type) :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=atomic_formula(type)
+	| 	LOOKAHEAD(2) exp=not_atomic_formula(type)
+	) {
+		return exp;
+	}
+}
+
+Expression<String> not_atomic_formula(int type) :
+{
+	Expression<String> exp = new Expression<String>(Connector.NOT);
+	Expression<String> s = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <NOT>
+		s=atomic_formula(type)
+	end=<RIGHT_BRACKET> {
+		exp.addChild(s);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> f_comp() :
+{
+	Expression<String> exp = null;
+}
+{
+	exp=binary_comp() {
+		return exp;
+	}
+}
+
+Expression<String> binary_comp() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=greater_comp()
+	|	LOOKAHEAD(2) exp=less_comp()
+	|	LOOKAHEAD(2) exp=greater_equal_comp()
+	|	LOOKAHEAD(2) exp=less_equal_comp()
+	|	LOOKAHEAD(2) exp=equal_comp()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> greater_comp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.GREATER_COMPARISON);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <GREAT>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> greater_equal_comp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.GREATER_OR_EQUAL_COMPARISON);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <GEQUAL>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> less_equal_comp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.LESS_OR_EQUAL_COMPARISON);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <LEQUAL>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> less_comp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.LESS_COMPARISON);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <LESS>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+    	exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> equal_comp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.EQUAL_COMPARISON);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <EQUAL>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+	 	exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> f_exp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.F_EXP);
+	Expression<String> child = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	(	child=number()
+	|	LOOKAHEAD(2) child=op()
+	|	LOOKAHEAD(2) child=f_head()
+	) {
+		exp.addChild(child);
+		exp.setLocation(child.getLocation());
+		return exp;
+	}
+}
+
+Expression<String> number() :
+{
+	Token t = null;
+}
+{
+	t=<NUMBER>
+	{
+		Expression<String> exp = new Expression<String>(Connector.NUMBER);
+		exp.setValue(Double.parseDouble(t.image));
+		exp.setBegin(t);
+        exp.setEnd(t);
+		return exp;
+	}
+}
+
+Expression<String> op() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=binary_operation()
+	|	LOOKAHEAD(2) exp=unary_op()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> binary_operation():
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=add_op()
+	|	LOOKAHEAD(2) exp=substract_op()
+	|	LOOKAHEAD(2) exp=multiply_op()
+	|	LOOKAHEAD(2) exp=divide_op()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> add_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.PLUS);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <ADD>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET>
+	{
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> substract_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MINUS);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <SUB>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> multiply_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MULTIPLICATION);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <MUL>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> divide_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.DIVISION);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <DIV>
+		op1=f_exp()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> unary_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.UMINUS);
+	Expression<String> op1 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <SUB>
+		op1=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> f_head() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FN_HEAD);
+	List<Symbol<String>> args = new ArrayList<Symbol<String>>();
+	Symbol<String> s = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> s=functor() {
+	    	exp.setSymbol(s);
+	    } (LOOKAHEAD(2) s=term() {
+	        args.add(s);
+	    })*
+	end=<RIGHT_BRACKET> {
+	    exp.setArguments(args);
+	    exp.setBegin(begin);
+	    exp.setEnd(end);
+        return exp;
+	}
+| 	s=functor() {
+        exp.setSymbol(s);
+		exp.setArguments(args);
+        exp.setLocation(s.getLocation());
+		return exp;
+	}
+}
+
+void structure_def() :
+{
+	ParsedAction op = null;
+	ParsedMethod meth = null;
+	ParsedDerivedPredicate dp = null;
+	NamedTypedList task = null;
+}
+{
+	( 	LOOKAHEAD(2)
+			op = action_def() {
+				this.domain.addAction(op);
+			}
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATIVE_ACTIONS)})
+			op = durative_action_def() {
+				this.domain.addAction(op);
+			}
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.DERIVED_PREDICATES)})
+			dp = derived_def() {
+				this.domain.addDerivedPredicate(dp);
+			}
+    |   LOOKAHEAD (2, {this.isRequirement(RequireKey.HIERARCHY)}) // ADD HDDL
+            op = htn_action_def() {
+                this.domain.addAction(op);
+            }
+    |   LOOKAHEAD (2, {this.isRequirement(RequireKey.HIERARCHY)}) // ADD HDDL
+            task = comp_task_def() {
+                this.domain.addTask(task);
+            }
+    |   LOOKAHEAD (2, {this.isRequirement(RequireKey.HIERARCHY)}) // ADD HDDL
+            meth = method_def() {
+                this.domain.addMethod(meth);
+            }
+    |	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATIVE_ACTIONS) // ADD HDDL2.1
+                && this.isRequirement(RequireKey.HIERARCHY)})
+            meth = durative_method_def() {
+                this.domain.addMethod(meth);
+            }
+	)
+}
+
+ParsedMethod method_def() : // ADD HDDL
+{
+	Symbol<String> name = null;
+	List<TypedSymbol<String>> parameters = null;
+	Expression<String> taskID = null;
+	Expression<String> precondition = new Expression<String>(Connector.AND);
+	ParsedTaskNetwork tn = null;
+	Token begin = null;
+    Token end = null;
+
+}
+{
+	try {
+		begin=left_bracket() <METHOD> name=method_name()
+			<PARAMETERS> <LEFT_BRACKET> parameters=typed_list(Lexer.VARIABLE) <RIGHT_BRACKET>
+			<TASK> taskID=task_formula(Lexer.TERM)
+			[LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_PRECONDITIONS)})
+			    <PRECONDITION> precondition=pre_gd()
+			]
+            tn = task_network()
+		end=right_bracket()
+	} catch(Throwable e) {
+	    this.error(e, token.beginLine, token.beginColumn);
+	}
+	{
+		ParsedMethod m = new ParsedMethod(name, parameters, taskID, precondition, tn);
+		m.setBegin(begin);
+        m.setEnd(end);
+        return m;
+	}
+}
+
+ParsedMethod durative_method_def() : // ADD HDDL2.1
+{
+    Symbol<String> name = null;
+	List<TypedSymbol<String>> parameters = null;
+	Expression<String> taskID = null;
+	Expression<String> duration = null;
+	Expression<String> condition = new Expression<String>(Connector.AND);
+	ParsedTaskNetwork tn = null;
+	Token begin = null;
+    Token end = null;
+
+}
+{
+	try {
+	    begin=left_bracket() <DURATIVE_METHOD> name=method_name()
+	        <PARAMETERS> <LEFT_BRACKET> parameters=typed_list(Lexer.VARIABLE) <RIGHT_BRACKET>
+			<TASK> taskID=task_formula(Lexer.TERM)
+			[<DURATION> duration=method_duration_constraint()]
+			[LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_PRECONDITIONS)})
+			    <CONDITION> condition=da_gd()
+			]
+            tn = durative_task_network()
+		end=right_bracket()
+	} catch(Throwable e) {
+        this.error(e, token.beginLine, token.beginColumn);
+    }
+    {
+    	ParsedMethod m = new ParsedMethod(name, parameters, taskID, duration, condition, tn);
+    	m.setBegin(begin);
+        m.setEnd(end);
+        return m;
+    }
+}
+
+ParsedTaskNetwork task_network() : // ADD HDDL
+{
+    Expression<String> tasks = null;
+    Expression<String> ordering = new Expression<String>(Connector.AND);
+    Expression<String> constraints = new Expression<String>(Connector.AND);
+    ParsedTaskNetwork tn = null;
+}
+{
+    LOOKAHEAD (1)
+        (<TASKS> | <SUBTASKS>)
+        tasks = subtask_def()
+   	    [<ORDERING> ordering = htn_ordering_constraints_def()]
+   	    [<CONSTRAINTS> constraints = htn_constraints_def()]
+   	    {
+            return new ParsedTaskNetwork(tasks, ordering, constraints, false, false);
+        }
+    | LOOKAHEAD (1)
+        (<ORDERED_TASKS> | <ORDERED_SUBTASKS>)
+        tasks = subtask_def()
+        [<CONSTRAINTS> constraints = htn_constraints_def()]
+        {
+            return new ParsedTaskNetwork(tasks, ordering, constraints, true, false);
+        }
+}
+
+ParsedTaskNetwork durative_task_network() : // ADD HDDL
+{
+    Expression<String> tasks = null;
+    Expression<String> ordering = new Expression<String>(Connector.AND);
+    Expression<String> constraints = new Expression<String>(Connector.AND);
+    ParsedTaskNetwork tn = null;
+}
+{
+    LOOKAHEAD (1)
+        (<TASKS> | <SUBTASKS>)
+        tasks = subtask_def()
+   	    [<ORDERING> ordering = durative_htn_ordering_constraints_def()]
+   	    [<CONSTRAINTS> constraints = htn_constraints_def()]
+   	    {
+            return new ParsedTaskNetwork(tasks, ordering, constraints, false, true);
+        }
+    | LOOKAHEAD (1)
+        (<ORDERED_TASKS> | <ORDERED_SUBTASKS>)
+        tasks = subtask_def()
+        [<CONSTRAINTS> constraints = htn_constraints_def()]
+        {
+            return new ParsedTaskNetwork(tasks, ordering, constraints, true, true);
+        }
+}
+
+Symbol<String> method_name() : // ADD HDDL
+{
+	Token t = token;
+}
+{
+	t=<SYMBOL> {
+		return new Symbol<String>(SymbolType.ACTION, t.image.toLowerCase(),
+		    t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+Expression<String> subtask_def() : // ADD HDDL
+{
+    Expression<String> exp = new Expression<String>(Connector.AND);
+    Expression<String> taskID = null;
+    Token begin;
+    Token end;
+}
+{
+    (   LOOKAHEAD(2)
+            taskID=subtask() {
+                exp = new Expression<String>(Connector.AND);
+                exp.addChild(taskID);
+                exp.setLocation(taskID.getLocation());
+            }
+    |   LOOKAHEAD(2)
+            exp=and_subtask()
+    |   LOOKAHEAD(3)
+            begin=<LEFT_BRACKET> end=<RIGHT_BRACKET> {
+                exp.setBegin(begin);
+                exp.setEnd(end);
+            }
+    ) {
+        return exp;
+    }
+}
+
+Expression<String> and_subtask() : // ADD HDDL
+{
+    Expression<String> exp = new Expression<String>(Connector.AND);
+    Expression<String> task = null;
+    int i = 0;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <AND> (LOOKAHEAD (2) task=subtask() {
+        exp.addChild(task);
+    })*
+    end=<RIGHT_BRACKET> {
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> subtask() :  // ADD HDDL
+{
+    Symbol<String> taskID;
+    Expression<String> task;
+    Token begin = null;
+    Token end = null;
+}
+{
+    (   LOOKAHEAD(3)
+            begin=<LEFT_BRACKET>
+                taskID=task_id_symbol()
+                task=task_formula(Lexer.TERM)
+            end=<RIGHT_BRACKET> {
+                task.setTaskID(taskID);
+                task.setBegin(begin);
+                task.setEnd(end);
+            }
+    |   LOOKAHEAD(2)
+            task=task_formula(Lexer.TERM)
+    ) {
+        return task;
+    }
+}
+Expression<String> task_formula(int type) : // ADD HDDL
+{
+	Expression<String> exp = new Expression<String>(Connector.TASK);
+	List<Symbol<String>> args = new ArrayList<Symbol<String>>();
+	Symbol<String> t = null;
+	Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> t=task_symbol() {
+		exp.setSymbol(t);
+	}
+	(LOOKAHEAD({ type == Lexer.CONSTANT } ) (t=constant() {
+			args.add(t);
+		})*
+	| LOOKAHEAD({ type == Lexer.TERM }) (t=term() {
+			args.add(t);
+		})*
+	) end=<RIGHT_BRACKET> {
+		exp.setArguments(args);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> htn_ordering_constraints_def() : // ADD HDDL
+{
+    Expression<String> exp = null;
+    Expression<String> taskID = null;
+}
+{
+    (   LOOKAHEAD(2)
+            exp=empty_and()
+    |   LOOKAHEAD(2)
+            taskID=htn_ordering_constraint() {
+                exp = new Expression<String>(Connector.AND);
+                exp.addChild(taskID);
+                exp.setLocation(taskID.getLocation());
+            }
+    |   LOOKAHEAD(2)
+            exp = and_ordering_constraints()
+    ) {
+        return exp;
+    }
+}
+
+Expression<String> durative_htn_ordering_constraints_def() : // ADD HDDL2.1
+{
+    Expression<String> exp = null;
+    Expression<String> ordering = null;
+}
+{
+    (   LOOKAHEAD(3)
+            exp=empty_and()
+    |   LOOKAHEAD(2)
+            ordering=durative_htn_ordering_constraint() {
+                exp = new Expression<String>(Connector.AND);
+                exp.addChild(ordering);
+                exp.setLocation(ordering.getLocation());
+            }
+    |     LOOKAHEAD(3)
+            exp = durative_and_ordering_constraints()
+    ) {
+        return exp;
+    }
+}
+
+Expression<String> and_ordering_constraints() : // ADD HDDL
+{
+    Expression<String> exp = new Expression<String>(Connector.AND);
+    Expression<String> ordering = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <AND> (ordering = htn_ordering_constraint() {
+        exp.addChild(ordering);
+    })* end=<RIGHT_BRACKET> {
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> durative_and_ordering_constraints() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.AND);
+    Expression<String> ordering = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <AND> (ordering = durative_htn_ordering_constraint() {
+        exp.addChild(ordering);
+    })* end=<RIGHT_BRACKET> {
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> htn_ordering_constraint() : // ADD HDDL
+{
+    Expression<String> exp = null;
+}
+{
+    exp = less_htn_ordering_constraint() {
+            return exp;
+    }
+}
+
+Expression<String> durative_htn_ordering_constraint() : // ADD HDDL 2.1
+{
+    Expression<String> exp = null;
+}
+{
+    (   LOOKAHEAD(3) // ADD HDDL2.1
+            exp = less_htn_ordering_constraint()
+    |   LOOKAHEAD(3) // ADD HDDL2.1
+            exp = equal_htn_temporal_ordering_constraint()
+    |   LOOKAHEAD(3) // ADD HDDL2.1
+            exp = less_htn_temporal_ordering_constraint()
+    |   LOOKAHEAD(3) // ADD HDDL2.1
+            exp = less_or_equal_htn_temporal_ordering_constraint()
+    |   LOOKAHEAD(3) // ADD HDDL2.1
+            exp = great_htn_temporal_ordering_constraint()
+    |   LOOKAHEAD(3) // ADD HDDL2.1
+            exp = great_or_equal_htn_temporal_ordering_constraint()
+    |   LOOKAHEAD(3) // ADD HDDL2.1
+                exp = not_equal_htn_temporal_ordering_constraint()
+    ) {
+        return exp;
+    }
+}
+
+
+Expression<String> less_htn_ordering_constraint() : // ADD HDDL
+{
+    Expression<String> exp = new Expression<String>(Connector.LESS_ORDERING_CONSTRAINT);
+    Expression<String> id1 = null;
+    Expression<String> id2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <LESS> id1=task_id() id2=task_id() end=<RIGHT_BRACKET> {
+        exp.addChild(id1);
+        exp.addChild(id2);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> equal_htn_temporal_ordering_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.EQUAL_ORDERING_CONSTRAINT);
+    Expression<String> id1 = null;
+    Expression<String> id2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <EQUAL> id1=timed_task_id() id2=timed_task_id() end=<RIGHT_BRACKET> {
+        exp.addChild(id1);
+        exp.addChild(id2);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> less_htn_temporal_ordering_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.LESS_ORDERING_CONSTRAINT);
+    Expression<String> id1 = null;
+    Expression<String> id2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <LESS> id1 = timed_task_id() id2 = timed_task_id() end=<RIGHT_BRACKET> {
+        exp.addChild(id1);
+        exp.addChild(id2);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> less_or_equal_htn_temporal_ordering_constraint() : // ADD HDDL2.1
+{
+     Expression<String> exp = new Expression<String>(Connector.LESS_OR_EQUAL_ORDERING_CONSTRAINT);
+     Expression<String> id1 = null;
+     Expression<String> id2 = null;
+     Token begin = null;
+     Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <LEQUAL> id1 = timed_task_id() id2 = timed_task_id() end=<RIGHT_BRACKET> {
+        exp.addChild(id1);
+        exp.addChild(id2);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> great_htn_temporal_ordering_constraint() : // ADD HDDL2.1
+{
+     Expression<String> exp = new Expression<String>(Connector.GREATER_ORDERING_CONSTRAINT);
+     List<Symbol<String>> tasks = new ArrayList<Symbol<String>>();
+     Expression<String> id1 = null;
+     Expression<String> id2 = null;
+     Token begin = null;
+     Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <GREAT> id1 = timed_task_id() id2 = timed_task_id() end=<RIGHT_BRACKET> {
+        exp.addChild(id1);
+        exp.addChild(id2);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> great_or_equal_htn_temporal_ordering_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.GREATER_OR_EQUAL_ORDERING_CONSTRAINT);
+    Expression<String> id1 = null;
+    Expression<String> id2 = null;
+    Token begin = null;
+    Token end = null;
+
+}
+{
+    begin=<LEFT_BRACKET> <GEQUAL> id1 = timed_task_id() id2 = timed_task_id() end=<RIGHT_BRACKET> {
+        exp.addChild(id1);
+        exp.addChild(id2);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> not_equal_htn_temporal_ordering_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.NOT);
+    Expression<String> equal = null;
+    Token begin = null;
+    Token end = null;
+
+}
+{
+    begin=<LEFT_BRACKET> <NOT> equal = equal_htn_temporal_ordering_constraint() end=<RIGHT_BRACKET> {
+        exp.addChild(equal);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Symbol<String> task_id_symbol() : // ADD HDDL
+{
+	Token t = token;
+}
+{
+	t=<SYMBOL> {
+		return new Symbol<String>(SymbolType.TASK_ID, t.image.toLowerCase(),
+		 t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+Expression<String> task_id() : // ADD HDDL
+{
+    Expression<String> exp = null;
+	Symbol<String> id = null;
+}
+{
+    id = task_id_symbol() {
+        exp = new Expression<String>(Connector.TASK_ID);
+		exp.setTaskID(id);
+	    return exp;
+	}
+
+}
+
+Expression<String> timed_task_id() : // ADD HDDL2.1
+{
+    Expression<String> exp = null;
+}
+{
+    (   LOOKAHEAD(2)
+            exp=start_task_id()
+    |   LOOKAHEAD(2)
+            exp=end_task_id()
+    ) {
+        return exp;
+    }
+}
+
+Expression<String> start_task_id() : // ADD HDDL2.1
+{
+    Symbol<String> id = null;
+    Expression<String> exp = new Expression<String>(Connector.TIMED_TASK_ID);
+}
+{
+    <LEFT_BRACKET> <START> id = task_id_symbol() <RIGHT_BRACKET> {
+        exp.setTaskID(id);
+        exp.setTimeSpecifier(TimeSpecifier.START);
+        return exp;
+    }
+}
+
+Expression<String> end_task_id() : // ADD HDDL2.1
+{
+    Symbol<String> id = null;
+    Expression<String> exp = new Expression<String>(Connector.TIMED_TASK_ID);
+}
+{
+    <LEFT_BRACKET> <END> id = task_id_symbol() <RIGHT_BRACKET> {
+        exp.setTaskID(id);
+        exp.setTimeSpecifier(TimeSpecifier.END);
+        return exp;
+    }
+}
+
+Expression<String> htn_constraints_def() : // ADD HDDL
+{
+    Expression<String> exp = null;
+    Expression<String> c = null;
+}
+{
+    (   LOOKAHEAD(2)
+            exp = empty_and()
+    |   LOOKAHEAD(2)
+            c = htn_constraint() {
+                exp = new Expression<String>(Connector.AND);
+                exp.addChild(c);
+                exp.setLocation(c.getLocation());
+            }
+    |   LOOKAHEAD(2)
+            exp = and_htn_constraints()
+    )
+    {
+        return exp;
+    }
+}
+
+Expression<String> and_htn_constraints() :  // ADD HDDL
+{
+    Expression<String> exp = new Expression<String>(Connector.AND);
+    Expression<String> c = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <AND> (c = htn_constraint() {
+        exp.addChild(c);
+    })+ end=<RIGHT_BRACKET> {
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> htn_constraint() : // ADD HDDL
+{
+    Expression<String> exp = null;
+}
+{
+    (   LOOKAHEAD(2)
+            exp = equal_atomic_formula()
+    |   LOOKAHEAD(2)
+            exp = not_equal_atomic_formula()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = hold_before_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = hold_after_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = hold_between_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = hold_during_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = at_end_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = at_start_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = always_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = at_most_one_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = sometime_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = sometime_before_htn_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.METHOD_CONSTRAINTS)}) // ADD HDDL2.1
+            exp = sometime_after_htn_constraint()
+    ) {
+        return exp;
+    }
+}
+
+Expression<String> hold_before_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.HOLD_BEFORE_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <HOLD_BEFORE> id = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> hold_after_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.HOLD_AFTER_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> effect = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <HOLD_AFTER> id = task_id() effect = effect() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(effect);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> hold_between_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.HOLD_BETWEEN_METHOD_CONSTRAINT);
+    Expression<String> id1 = null;
+    Expression<String> id2 = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <HOLD_BETWEEN> id1 = task_id() id2 = task_id() gd = gd() end=<RIGHT_BRACKET> {
+    exp.addChild(id1);
+    exp.addChild(id2);
+    exp.addChild(gd);
+    exp.setBegin(begin);
+    exp.setEnd(end);
+    return exp;
+}
+}
+
+Expression<String> hold_during_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.HOLD_DURING_METHOD_CONSTRAINT);
+    Expression<String> id1 = null;
+    Expression<String> id2 = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <HOLD_DURING> id1 = task_id() id2 = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id1);
+        exp.addChild(id2);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> at_end_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.AT_END_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> effect = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <AT> <END> id = task_id() effect = effect() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(effect);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> at_start_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.AT_START_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <AT> <START> id = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> always_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.ALWAYS_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <ALWAYS> id = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> at_most_one_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.AT_MOST_ONCE_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <AT_MOST_ONCE> id = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> sometime_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.SOMETIME_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <SOMETIME> id = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> sometime_before_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.SOMETIME_BEFORE_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <SOMETIME_BEFORE> id = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> sometime_after_htn_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.SOMETIME_AFTER_METHOD_CONSTRAINT);
+    Expression<String> id = null;
+    Expression<String> gd = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+    begin=<LEFT_BRACKET> <SOMETIME_AFTER> id = task_id() gd = gd() end=<RIGHT_BRACKET> {
+        exp.addChild(id);
+        exp.addChild(gd);
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+ParsedDerivedPredicate derived_def() :
+{
+	NamedTypedList head = null;
+	Expression<String> body = null;
+	Token begin = null;
+	Token end = null;
+}
+{
+	try {
+		left_bracket() <DERIVED>
+			head=atomic_formula_skeleton()
+			body=gd()
+		right_bracket()
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+	{
+		ParsedDerivedPredicate axiom = new ParsedDerivedPredicate(head, body);
+		axiom.setBegin(begin);
+		axiom.setEnd(end);
+		return axiom;
+	}
+}
+
+ParsedAction action_def() :
+{
+	Symbol<String> name = null;
+	List<TypedSymbol<String>> parameters = null;
+	Expression<String> preconds = new Expression<String>(Connector.AND);
+	Expression<String> effects = new Expression<String>(Connector.AND);
+	Token begin = null;
+	Token end = null;
+}
+{
+	try {
+		begin=left_bracket() <ACTION> name=action_name()
+			<PARAMETERS> <LEFT_BRACKET> parameters=typed_list(Lexer.VARIABLE) <RIGHT_BRACKET>
+		    <PRECONDITION> preconds=pre_gd()
+		    <EFFECT> effects=effect()
+		end=right_bracket()
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+	{
+		ParsedAction a = new ParsedAction(name, parameters, preconds, effects);
+		a.setBegin(begin);
+		a.setEnd(end);
+		return a;
+	}
+}
+
+ParsedAction htn_action_def() :
+{
+	Symbol<String> name = null;
+	List<TypedSymbol<String>> parameters = null;
+	Expression<String> preconds = new Expression<String>(Connector.AND);
+	Expression<String> effects = new Expression<String>(Connector.AND);
+    Token begin = null;
+    Token end = null;
+
+}
+{
+	try {
+		begin=left_bracket() <ACTION> name=action_name()
+			<PARAMETERS> <LEFT_BRACKET> parameters=typed_list(Lexer.VARIABLE) <RIGHT_BRACKET>
+		    [LOOKAHEAD(2) <PRECONDITION> preconds=pre_gd()]
+			[LOOKAHEAD(2) <EFFECT> effects=effect()]
+		end=right_bracket()
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+	{
+		ParsedAction a =  new ParsedAction(name, parameters, preconds, effects);
+		a.setBegin(begin);
+        a.setEnd(end);
+        return a;
+	}
+}
+
+Symbol<String> action_name() :
+{
+	Token t = token;
+}
+{
+	t=<SYMBOL> {
+		return new Symbol<String>(SymbolType.ACTION, t.image.toLowerCase(),
+		    t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+Expression<String> pre_gd() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(3, { this.isRequirement(RequireKey.PREFERENCES)}) exp=pref_gd()
+	|	LOOKAHEAD(2) exp=and_pre_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.UNIVERSAL_PRECONDITIONS)}) exp=forall_pre_gd()
+	|	LOOKAHEAD(2) exp=empty_or()
+	|	LOOKAHEAD(2) exp=gd()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> empty_or() :
+{
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> end=<RIGHT_BRACKET>
+	{
+		Expression<String> or = new Expression<String>(Connector.OR);
+		or.setBegin(begin);
+		or.setEnd(end);
+		return or;
+	}
+}
+
+Expression<String> empty_and() :
+{
+	Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> end=<RIGHT_BRACKET>
+	{
+		Expression<String> and = new Expression<String>(Connector.AND);
+		and.setBegin(begin);
+        and.setEnd(end);
+        return and;
+	}
+}
+
+Expression<String> and_pre_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> s;
+	Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <AND>
+		(s=pre_gd() {
+			exp.addChild(s);
+		})*
+		end=<RIGHT_BRACKET>
+	{
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> forall_pre_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FORALL);
+	List<TypedSymbol<String>> vars = null;
+	Expression<String> s = null;
+	Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <FORALL>
+		<LEFT_BRACKET>
+			vars=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		s=pre_gd()
+	end=<RIGHT_BRACKET>
+	{
+		exp.setQuantifiedVariables(vars);
+		exp.addChild(s);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> pref_gd() :
+{
+	Symbol<String> pref_name = null;
+	Expression<String> exp = null;
+	Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <PREFERENCE>
+		[pref_name=pref_name()]
+		exp=gd()
+	end=<RIGHT_BRACKET> {
+		exp.setPrefName(pref_name);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Symbol<String> pref_name() :
+{
+	Token t = null;
+}
+{
+	t=<SYMBOL> {
+		return new Symbol<String>(SymbolType.PREFERENCE, t.image.toLowerCase(),
+		    t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+Expression<String> effect() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=empty_or()
+	|   LOOKAHEAD(2) exp=and_c_effect()
+	|	LOOKAHEAD(2) exp=c_effect()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> and_c_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> s = null;
+	Token begin = null;
+	Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <AND> (LOOKAHEAD(2) s=c_effect() {
+		exp.addChild(s);
+	})*
+	end=<RIGHT_BRACKET>
+	{
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> c_effect() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2, { this.isRequirement(RequireKey.CONDITIONAL_EFFECTS)}) exp=forall_effect()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.CONDITIONAL_EFFECTS)}) exp=when_con_effect()
+	|	LOOKAHEAD(2) exp=p_effect()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> forall_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FORALL);
+	List<TypedSymbol<String>> vars = null;
+	Expression<String> s = null;
+	Token begin = null;
+	Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <FORALL>
+		<LEFT_BRACKET>
+			vars=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		s=effect()
+	end=<RIGHT_BRACKET> {
+		exp.setQuantifiedVariables(vars);
+		exp.addChild(s);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> when_con_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.WHEN);
+	Expression<String> condition = null;
+	Expression<String> effects = null;
+	Token begin = null;
+	Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <WHEN>
+		condition=gd()
+		effects=cond_effect()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(condition);
+		exp.addChild(effects);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> cond_effect() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=and_p_effect()
+	|	LOOKAHEAD(2) exp=p_effect()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> and_p_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> s = null;
+	Token begin = null;
+	Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <AND> (LOOKAHEAD(2) s=p_effect() {
+		exp.addChild(s);
+	})*
+	end=<RIGHT_BRACKET>
+	{
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> p_effect() :
+{
+	Expression<String> exp = null;
+}
+{
+ 	(	LOOKAHEAD(2, { this.isRequirement(RequireKey.FLUENTS)
+    			|| this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+    			|| this.isRequirement(RequireKey.OBJECT_FLUENTS)}) exp=assign_op()
+    	|   LOOKAHEAD(2, { this.isRequirement(RequireKey.ACTION_COSTS) }) exp=increase_total_cost()
+    	|	LOOKAHEAD(2) exp=literal(Lexer.TERM)
+    	) {
+    		return exp;
+    	}
+
+}
+
+Expression<String> increase_total_cost() :
+{
+	Expression<String> exp = new Expression<String>(Connector.INCREASE);
+	Expression<String> op1 = null;
+	Expression<String> op2 = null;
+    Token begin = null;
+    Token end = null;
+}
+{
+	begin=<LEFT_BRACKET> <INCREASE>
+		op1=total_cost()
+		op2=numeric_term()
+	end=<RIGHT_BRACKET>
+	{
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> total_cost() :
+{
+	Token t;
+    Token begin;
+    Token end;
+}
+{
+	begin=<LEFT_BRACKET> t=<TOTAL_COST> end=<RIGHT_BRACKET> {
+	Expression<String> exp = new Expression<String>(Connector.FN_HEAD);
+	exp.setSymbol(new Symbol<String>(SymbolType.FUNCTOR, t.image.toLowerCase(),
+	    t.beginLine, t.beginColumn, t.endLine, t.endColumn));
+	exp.setArguments(new ArrayList<Symbol<String>>());
+	exp.setBegin(begin);
+	exp.setEnd(end);
+	return exp;
+}
+}
+
+Expression<String> numeric_term() :
+{
+	List<Symbol<String>> tokenList = new ArrayList<Symbol<String>>();
+	Symbol<String> s = null;
+	Expression<String> exp = null;
+}
+{
+	(   exp=f_head()
+    | 	exp=number()
+    ) {
+		return exp;
+	}
+}
+
+Expression<String> assign_op() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=assign()
+	|	LOOKAHEAD(2) exp=scale_up()
+	|	LOOKAHEAD(2) exp=scale_down()
+	|	LOOKAHEAD(2) exp=increase()
+	|	LOOKAHEAD(2) exp=decrease()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> assign() :
+{
+	Expression<String> exp = new Expression<String>(Connector.ASSIGN);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <ASSIGN>
+		op1=f_head()
+		op2=f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> scale_up() :
+{
+	Expression<String> exp = new Expression<String>(Connector.SCALE_UP);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <SCALE_UP>
+		op1=f_head()
+		op2=f_exp()
+	end=<RIGHT_BRACKET>
+	{
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> scale_down() :
+{
+	Expression<String> exp = new Expression<String>(Connector.SCALE_DOWN);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <SCALE_DOWN>
+		op1=f_head()
+		op2=f_exp()
+	end=<RIGHT_BRACKET>
+	{
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> increase() :
+{
+	Expression<String> exp = new Expression<String>(Connector.INCREASE);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <INCREASE>
+		op1=f_head()
+		op2=f_exp()
+	end=<RIGHT_BRACKET>
+	{
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> decrease() :
+{
+	Expression<String> exp = new Expression<String>(Connector.DECREASE);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <DECREASE>
+		op1=f_head()
+		op2=f_exp()
+	end=<RIGHT_BRACKET>
+	{
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+ParsedAction durative_action_def() :
+{
+	Symbol<String> name = null;
+	List<TypedSymbol<String>> parameters = null;
+	Expression<String> duration = null;
+	Expression<String> condition = null;
+	Expression<String> effect = null;
+	Token begin = null;
+    Token end = null;
+
+}
+{
+	try {
+		begin=left_bracket() <DURATIVE_ACTION> name=da_symbol()
+			<PARAMETERS>
+				<LEFT_BRACKET>
+					parameters=typed_list(Lexer.VARIABLE)
+				<RIGHT_BRACKET>
+			<DURATION> duration=duration_constraint()
+			<CONDITION> condition=da_gd()
+			<EFFECT> effect=da_effect()
+		end=right_bracket()
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+	{
+		ParsedAction a = new ParsedAction(name, parameters, condition, effect, duration);
+		a.setBegin(begin);
+		a.setEnd(end);
+		return a;
+	}
+}
+
+Symbol<String> da_symbol() :
+{
+	Token t = null;
+}
+{
+	t=<SYMBOL> {
+	return new Symbol<String>(SymbolType.ACTION, t.image.toLowerCase(),
+	    t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+}
+}
+
+Expression<String> duration_constraint() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(2) exp=empty_or()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)}) exp=and_simple_duration_constraint()
+	|	LOOKAHEAD(2) exp=simple_duration_constraint()
+	) {
+		return exp;
+	}
+}
+Expression<String> and_simple_duration_constraint() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AND>
+		(LOOKAHEAD(2) child=simple_duration_constraint(){
+			exp.addChild(child);
+		})+
+	end=<RIGHT_BRACKET> {
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> simple_duration_constraint() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=d_op()
+	|	LOOKAHEAD(2) exp=at_simple_duration_constraint()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> at_simple_duration_constraint() :
+{
+	Expression<String> exp = null;
+}
+{
+	(	LOOKAHEAD(3) exp=at_start_simple_duration_constraint()
+	| 	LOOKAHEAD(3) exp=at_end_simple_duration_constraint()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> at_start_simple_duration_constraint() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_START);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <START>
+		child=simple_duration_constraint()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> at_end_simple_duration_constraint() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_END);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <END>
+		child=simple_duration_constraint()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> d_op() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2)
+			exp=equal_d_op()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)})
+			exp=gequal_d_op()
+	| 	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)})
+			exp=lequal_d_op()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> equal_d_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.EQUAL_COMPARISON);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <EQUAL>
+		op1=var_duration()
+		op2=d_value()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> gequal_d_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.GREATER_OR_EQUAL_COMPARISON);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <GEQUAL>
+		op1=var_duration()
+		op2=d_value()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> lequal_d_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.LESS_OR_EQUAL_COMPARISON);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <LEQUAL>
+		op1=var_duration()
+		op2=d_value()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> var_duration() :
+{
+	Expression<String> exp = new Expression<String>(Connector.TIME_VAR);
+	Token t;
+}
+{
+	t=<VAR_DURATION>
+	{
+		exp.setVariable(new Symbol<String>(SymbolType.DURATION_VARIABLE, t.image.toLowerCase(),
+		    t.beginLine, t.beginColumn, t.endLine, t.endColumn));
+		return exp;
+	}
+}
+
+Expression<String> d_value() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=number()
+	| 	LOOKAHEAD(2, { this.isRequirement(RequireKey.FLUENTS)
+			|| this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+			|| this.isRequirement(RequireKey.OBJECT_FLUENTS)}) exp=f_exp()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> method_duration_constraint() : // ADD HDDL2.1
+{
+    Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=empty_or()
+	|	LOOKAHEAD(2) exp=simple_method_duration_constraint() // ADD HDDL2.1
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)}) // ADD HDDL2.1
+            exp=and_simple_method_duration_constraint()
+	) {
+	    return exp;
+	}
+}
+
+Expression<String> and_simple_method_duration_constraint() : // ADD HDDL2.1
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AND>
+		(LOOKAHEAD(2) child=simple_method_duration_constraint(){
+			exp.addChild(child);
+		})+
+	end=<RIGHT_BRACKET> {
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> simple_method_duration_constraint() : // ADD HDDL2.1
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2)
+            exp=equal_method_duration_constraint()
+    |	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)})
+             exp=great_method_duration_constraint()
+    | 	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)})
+            exp=great_or_equal_method_duration_constraint()
+    |   LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)})
+            exp=less_method_duration_constraint()
+    | 	LOOKAHEAD(2, { this.isRequirement(RequireKey.DURATION_INEQUALITIES)})
+            exp=less_or_equal_method_duration_constraint()
+	|	LOOKAHEAD(2) exp=at_simple_duration_constraint()
+	) {
+		return exp;
+    }
+}
+
+Expression<String> equal_method_duration_constraint() : // ADD HDDL2.1
+{
+  	Expression<String> exp = new Expression<String>(Connector.EQUAL_COMPARISON);
+  	Expression<String> op1, op2;
+  	Token begin, end;
+}
+{
+  	begin=<LEFT_BRACKET> <EQUAL>
+  		op1=duration()
+  		op2=d_value()
+  	end=<RIGHT_BRACKET> {
+  		exp.addChild(op1);
+  		exp.addChild(op2);
+  		exp.setBegin(begin);
+  		exp.setEnd(begin);
+  		return exp;
+  	}
+}
+
+Expression<String> great_method_duration_constraint() : // ADD HDDL2.1
+{
+   	Expression<String> exp = new Expression<String>(Connector.GREATER_COMPARISON);
+   	Expression<String> op1, op2;
+   	Token begin, end;
+}
+{
+   	begin=<LEFT_BRACKET> <GREAT>
+   		op1=duration()
+   		op2=d_value()
+   	end=<RIGHT_BRACKET> {
+   		exp.addChild(op1);
+   		exp.addChild(op2);
+   		exp.setBegin(begin);
+   		exp.setEnd(end);
+   		return exp;
+   	}
+}
+
+Expression<String> great_or_equal_method_duration_constraint() : // ADD HDDL2.1
+{
+   	Expression<String> exp = new Expression<String>(Connector.GREATER_OR_EQUAL_COMPARISON);
+   	Expression<String> op1, op2;
+   	Token begin, end;
+}
+{
+   	begin=<LEFT_BRACKET> <GEQUAL>
+   		op1=duration()
+   		op2=d_value()
+   	end=<RIGHT_BRACKET> {
+   		exp.addChild(op1);
+   		exp.addChild(op2);
+   		exp.setBegin(begin);
+   		exp.setEnd(end);
+   		return exp;
+   	}
+}
+
+Expression<String> less_method_duration_constraint() : // ADD HDDL2.1
+{
+   	Expression<String> exp = new Expression<String>(Connector.LESS_COMPARISON);
+   	Expression<String> op1, op2;
+   	Token begin, end;
+}
+{
+   	begin=<LEFT_BRACKET> <LESS>
+   		op1=duration()
+   		op2=d_value()
+   	end=<RIGHT_BRACKET> {
+   		exp.addChild(op1);
+   		exp.addChild(op2);
+   		exp.setBegin(begin);
+   		exp.setEnd(end);
+   		return exp;
+   	}
+}
+
+Expression<String> less_or_equal_method_duration_constraint() : // ADD HDDL2.1
+{
+   	Expression<String> exp = new Expression<String>(Connector.LESS_OR_EQUAL_COMPARISON);
+   	Expression<String> op1, op2;
+   	Token begin, end;
+}
+{
+   	begin=<LEFT_BRACKET> <LEQUAL>
+   		op1=duration()
+   		op2=d_value()
+   	end=<RIGHT_BRACKET> {
+   		exp.addChild(op1);
+   		exp.addChild(op2);
+   		exp.setBegin(begin);
+   		exp.setEnd(end);
+   		return exp;
+   	}
+}
+
+Expression<String> duration() : // ADD HDDL2.1
+{
+    Expression<String> duration;
+}
+{
+    (duration = var_duration() | duration = f_duration()) {
+        return duration;
+    }
+}
+
+Expression<String> f_duration() : // ADD HDDL2.1
+{
+    Expression<String> exp = new Expression<String>(Connector.F_TASK_TIME);
+    Token t, begin, end;
+    Symbol<String> argument;
+}
+{
+    begin=<LEFT_BRACKET> t=<F_DURATION> argument = task_id_symbol() end=<RIGHT_BRACKET> {
+        exp.setSymbol(new Symbol<String>(SymbolType.FUNCTOR, t.image.toLowerCase(),
+            t.beginLine, t.beginColumn, t.endLine, t.endColumn));
+        exp.setArguments(new ArrayList<Symbol<String>>());
+        exp.setBegin(begin);
+        exp.setEnd(end);
+        return exp;
+    }
+}
+
+Expression<String> temporal_simple_method_duration_constraint() : // ADD HDDL2.1
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(3) exp=at_start_simple_method_duration_constraint()
+	| 	LOOKAHEAD(3) exp=at_end_simple_method_duration_constraint()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> at_start_simple_method_duration_constraint() : // ADD HDDL2.1
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_START);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <START>
+		child=simple_duration_constraint()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> at_end_simple_method_duration_constraint() : // ADD HDDL2.1
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_END);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <END>
+		child=simple_duration_constraint()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_gd():
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=pref_timed_gd()
+	|	LOOKAHEAD(2) exp=and_da_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.UNIVERSAL_PRECONDITIONS)})
+			exp=forall_da_gd()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> forall_da_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FORALL);
+	Expression<String> child;
+	List<TypedSymbol<String>> typedList;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <FORALL>
+		<LEFT_BRACKET>
+			typedList=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		child=da_gd()
+	end=<RIGHT_BRACKET>
+	{
+		exp.setQuantifiedVariables(typedList);
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> and_da_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AND>
+		(LOOKAHEAD(2) child=da_gd() {
+			exp.addChild(child);
+		})*
+	end=<RIGHT_BRACKET> {
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> pref_timed_gd() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2)
+			exp=timed_gd()
+	|	LOOKAHEAD(2, { this.isRequirement(RequireKey.PREFERENCES)})
+			exp=named_pref_timed_gd()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> named_pref_timed_gd() :
+{
+	Symbol<String> pref_name = null;
+	Expression<String> exp;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <PREFERENCE>
+		[pref_name=pref_name()]
+		exp=timed_gd()
+	end=<RIGHT_BRACKET> {
+		exp.setPrefName(pref_name);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> timed_gd() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=at_timed_gd()
+	|	LOOKAHEAD(2) exp=over_timed_gd()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> over_timed_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.OVER_ALL);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <OVER> <ALL>
+		child=gd()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> at_timed_gd() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(3) exp=at_start_timed_gd()
+	|	LOOKAHEAD(2) exp=at_end_timed_gd()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> at_start_timed_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_START);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <START>
+		child=gd()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> at_end_timed_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_END);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <END>
+		child=gd()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_effect() :
+{
+	Expression<String> exp;
+}
+{
+	(   LOOKAHEAD(2)
+    	    exp=empty_and()
+	|	LOOKAHEAD(2)
+			exp=and_da_effect()
+	| 	LOOKAHEAD(2)
+			exp=timed_effect()
+	|	LOOKAHEAD(2, {this.isRequirement(RequireKey.CONDITIONAL_EFFECTS)})
+			exp=forall_da_effect()
+	|	LOOKAHEAD(2, {this.isRequirement(RequireKey.CONDITIONAL_EFFECTS)})
+			exp=when_da_effect()
+	| 	LOOKAHEAD(2, {this.isRequirement(RequireKey.FLUENTS)
+			|| this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+			|| this.isRequirement(RequireKey.OBJECT_FLUENTS)})
+			exp=da_assign_op()
+
+	) {
+		return exp;
+	}
+}
+
+Expression<String> da_assign_op() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=da_assign()
+	|	LOOKAHEAD(2) exp=da_scale_up()
+	|	LOOKAHEAD(2) exp=da_scale_down()
+	|	LOOKAHEAD(2) exp=da_increase()
+	|	LOOKAHEAD(2) exp=da_decrease()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> da_assign() :
+{
+	Expression<String> exp = new Expression<String>(Connector.ASSIGN);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <ASSIGN>
+	(	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	| 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_scale_up() :
+{
+	Expression<String> exp = new Expression<String>(Connector.SCALE_UP);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <SCALE_UP>
+	(	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	| 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_scale_down() :
+{
+	Expression<String> exp = new Expression<String>(Connector.SCALE_DOWN);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <SCALE_DOWN>
+	(	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	| 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_increase() :
+{
+	Expression<String> exp = new Expression<String>(Connector.INCREASE);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <INCREASE>
+	(	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	| 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_decrease() :
+{
+	Expression<String> exp = new Expression<String>(Connector.DECREASE);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <DECREASE>
+	(	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	| 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> when_da_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.WHEN);
+	Expression<String> condition, effect;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <WHEN>
+		condition=da_gd()
+		effect=da_effect()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(condition);
+		exp.addChild(effect);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> forall_da_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FORALL);
+	List<TypedSymbol<String>> typedList;
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <FORALL>
+		<LEFT_BRACKET>
+			typedList=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		child=da_effect()
+	end=<RIGHT_BRACKET> {
+		exp.setQuantifiedVariables(typedList);
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> and_da_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AND>
+		(LOOKAHEAD(2) child=da_effect() {
+			exp.addChild(child);
+		})*
+	end=<RIGHT_BRACKET> {
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> timed_effect() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2)
+			exp=at_a_effect()
+	|	LOOKAHEAD(3, {this.isRequirement(RequireKey.CONTINOUS_EFFECTS)})
+			exp=assign_op_t()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> at_f_assign_da() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(3) exp=at_start_f_assign_da()
+	|	LOOKAHEAD(3) exp=at_end_f_assign_da()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> at_start_f_assign_da() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_START);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <START>
+		child=f_assign_da()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+
+Expression<String> at_end_f_assign_da() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_END);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <END>
+		child=f_assign_da()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> at_a_effect() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(4) exp=at_start_a_effect()
+	|	LOOKAHEAD(4) exp=at_end_a_effect()
+	) {
+		return exp;
+	}
+}
+
+
+Expression<String> a_effect() :
+{
+	Expression<String> exp;
+}
+{
+ 	(	LOOKAHEAD(2) exp=f_assign_da()
+	|	LOOKAHEAD(2) exp=literal(Lexer.TERM)
+	|	LOOKAHEAD(2) exp=when_con_effect()
+	|	LOOKAHEAD(2) exp=forall_effect()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> at_start_a_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_START);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <START>
+		child=a_effect()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> at_end_a_effect() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AT_END);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT> <END>
+		child=a_effect()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> assign_op_t() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=increase_assign_op_t()
+	|	LOOKAHEAD(2) exp=decrease_assign_op_t()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> increase_assign_op_t() :
+{
+	Expression<String> exp = new Expression<String>(Connector.ASSIGN);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <INCREASE>
+		op1=f_head()
+		op2=f_exp_t()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> decrease_assign_op_t() :
+{
+	Expression<String> exp = new Expression<String>(Connector.ASSIGN);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <DECREASE>
+		op1=f_head()
+		op2=f_exp_t()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> f_exp_t() :
+{
+	Expression<String> exp = new Expression<String>(Connector.F_EXP_T);
+	Symbol<String> continuous_variable_name;
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	(	LOOKAHEAD(2)
+			begin=<LEFT_BRACKET> <MUL>
+				continuous_variable_name=continuous_variable()
+				child=f_exp()
+			end=<RIGHT_BRACKET> {
+			    exp.setBegin(begin);
+			    exp.setEnd(end);
+			    exp.addChild(child);
+			    exp.setVariable(continuous_variable_name);
+			}
+	| 	LOOKAHEAD(2)
+			begin=<LEFT_BRACKET> <MUL>
+				child=f_exp()
+				continuous_variable_name=continuous_variable()
+			end=<RIGHT_BRACKET>  {
+                exp.setBegin(begin);
+                exp.setEnd(end);
+                exp.addChild(child);
+                exp.setVariable(continuous_variable_name);
+            }
+	| 	LOOKAHEAD(2)
+		    continuous_variable_name=continuous_variable() {
+		        exp.setLocation(continuous_variable_name.getLocation());
+                exp.setVariable(continuous_variable_name);
+		    }
+	) {
+		return exp;
+	}
+}
+
+Symbol<String> continuous_variable() :
+{
+	Token t;
+}
+{
+	t=<CONTINUOUS_VARIABLE>  {
+		return new Symbol<String>(SymbolType.CONTINUOUS_VARIABLE, t.image.toLowerCase(),
+		    t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+Expression<String> f_assign_da() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=da_assign()
+	|	LOOKAHEAD(2) exp=da_scale_up()
+	|	LOOKAHEAD(2) exp=da_scale_down()
+	|	LOOKAHEAD(2) exp=da_increase()
+	|	LOOKAHEAD(2) exp=da_decrease()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> f_exp_da() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=da_op()
+	|	LOOKAHEAD(2, {this.isRequirement(RequireKey.DURATION_INEQUALITIES)}) exp=var_duration()
+	|	LOOKAHEAD(2) exp=f_exp()
+	) {
+		return exp;
+	}
+}
+
+
+Expression<String> da_op() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=da_add_op()
+	|	LOOKAHEAD(2) exp=da_substract_op()
+	|	LOOKAHEAD(2) exp=da_multiply_op()
+	|	LOOKAHEAD(2) exp=da_divide_op()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> da_add_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.PLUS);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <ADD>
+	(	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	| 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_substract_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MINUS);
+	Expression<String> op1, op2 = null;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <SUB>
+		(	LOOKAHEAD(3) (op1=f_head() [op2=f_exp_da()])
+	    | 	LOOKAHEAD(3) ([LOOKAHEAD(2) op2=f_exp_da()] op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		if (op2 != null) exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_multiply_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MULTIPLICATION);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <MUL>
+	    (	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	    | 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> da_divide_op() :
+{
+	Expression<String> exp = new Expression<String>(Connector.DIVISION);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <DIV>
+	    (	LOOKAHEAD(3) (op1=f_head() op2=f_exp_da())
+	    | 	LOOKAHEAD(3) (op2=f_exp_da() op1=f_head()))
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+ParsedProblem problem() :
+{
+}
+{
+    (   LOOKAHEAD({this.isRequirement(RequireKey.HIERARCHY)})
+            htn_problem()
+    |    pddl_problem()
+    ) {
+    return this.problem;
+    }
+}
+
+ParsedProblem pddl_problem() :
+{
+	Symbol<String> name;
+	Symbol<String> domain;
+}
+{
+	try {
+		<LEFT_BRACKET> <DEFINE>
+		<LEFT_BRACKET> <PROBLEM>
+			name=problem_name()
+		<RIGHT_BRACKET>
+		<LEFT_BRACKET> <P_DOMAIN>
+			domain = domain_problem_name() {
+                this.problem = new DefaultParsedProblem(name, domain);
+            }
+		<RIGHT_BRACKET>
+		[LOOKAHEAD(2) require_def(Lexer.PARSER_PROBLEM)]
+		[LOOKAHEAD(2) object_declaration()]
+        init()
+		goal()
+		[LOOKAHEAD(2, {this.isRequirement(RequireKey.CONSTRAINTS)}) pddl_const(Lexer.PARSER_PROBLEM)]
+		[LOOKAHEAD(2, {this.isRequirement(RequireKey.NUMERIC_FLUENTS)}) metric_spec()]
+		// [length-spec()] not implemented
+		<RIGHT_BRACKET>
+		<EOF>
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+	{
+	    return this.problem;
+    }
+}
+
+ParsedProblem htn_problem() : // ADD HDDL
+{
+	Symbol<String> name;
+	Symbol<String> domain;
+	ParsedTaskNetwork taskNetwork;
+	List<TypedSymbol<String>> parameters = new ArrayList<TypedSymbol<String>>();
+}
+{
+	try {
+		<LEFT_BRACKET> <DEFINE>
+		<LEFT_BRACKET> <PROBLEM>
+			name=problem_name()
+		<RIGHT_BRACKET>
+		<LEFT_BRACKET> <P_DOMAIN>
+			domain = domain_problem_name() {
+			    this.problem = new DefaultParsedProblem(name, domain);
+		    }
+
+		<RIGHT_BRACKET>
+		[LOOKAHEAD(2) require_def(Lexer.PARSER_PROBLEM)]
+		[LOOKAHEAD(2) object_declaration()]
+        <LEFT_BRACKET> <HTN>
+            [LOOKAHEAD(2) <PARAMETERS> <LEFT_BRACKET> parameters=typed_list(Lexer.VARIABLE) <RIGHT_BRACKET>]
+            (   LOOKAHEAD(2, {!this.isRequirement(RequireKey.DURATIVE_ACTIONS)})
+                taskNetwork = task_network()
+            |   LOOKAHEAD(2, {this.isRequirement(RequireKey.DURATIVE_ACTIONS)})
+                    taskNetwork = durative_task_network()
+            ) {
+                taskNetwork.setParameters(parameters);
+                this.problem.setInitialTaskNetwork(taskNetwork);
+            }
+        <RIGHT_BRACKET>
+		init()
+		[LOOKAHEAD(2) goal()]
+		[LOOKAHEAD(2, {this.isRequirement(RequireKey.NUMERIC_FLUENTS)}) metric_spec()]
+		<RIGHT_BRACKET>
+		<EOF>
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+    {
+        return this.problem;
+    }
+}
+
+
+Symbol<String> problem_name() :
+{ Token t = null; }
+{
+	t=<SYMBOL> {
+	    return new Symbol<String>(SymbolType.PROBLEM, t.image.toLowerCase(),
+	        t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+Symbol<String> domain_problem_name() :
+{ Token t = null; }
+{
+	t=<SYMBOL> {
+	    return new Symbol<String>(SymbolType.DOMAIN, t.image.toLowerCase(),
+	        t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+    }
+}
+
+Symbol<String> domain_name() :
+{ Token t = null; }
+{
+	t=<SYMBOL> {
+	    return new Symbol<String>(SymbolType.DOMAIN, t.image.toLowerCase(),
+	        t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+	}
+}
+
+void object_declaration() :
+{
+	List<TypedSymbol<String>> typedList = null;
+}
+{
+	try {
+		left_bracket() <OBJECTS>
+			typedList=typed_list(Lexer.CONSTANT)
+		right_bracket() {
+			for (TypedSymbol<String> object : typedList) {
+                if (object.getTypes().isEmpty()) {
+                    object.addType(Symbol.OBJECT_TYPE);
+                }
+                this.problem.addObject(object);
+			}
+		}
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+void init() :
+{
+	Expression<String> exp;
+}
+{
+	try {
+		left_bracket() <INIT>
+			(LOOKAHEAD(2) exp=init_el() {
+				this.problem.addInitialFact(exp);
+			})*
+		right_bracket()
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+
+Expression<String> init_el() :
+{
+	Expression<String> exp;
+}
+{
+	(
+		LOOKAHEAD(3, {this.isRequirement(RequireKey.TIMED_INITIAL_LITERALS)}) exp=timed_literal()
+	|	LOOKAHEAD(2) exp=literal(Lexer.CONSTANT)
+	|	LOOKAHEAD(2, {this.isRequirement(RequireKey.FLUENTS)
+			|| this.isRequirement(RequireKey.NUMERIC_FLUENTS)
+			|| this.isRequirement(RequireKey.OBJECT_FLUENTS)
+			|| this.isRequirement(RequireKey.ACTION_COSTS)}) exp=equal_init_el()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> equal_init_el() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FN_ATOM);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <EQUAL>
+		op1=constant_f_head()
+		op2=number()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> timed_literal() :
+{
+	Expression<String> exp = new Expression<String>(Connector.TIMED_LITERAL);
+	Expression<String> literal, time;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AT>
+		time=number()
+		literal=literal(Lexer.CONSTANT)
+	end=<RIGHT_BRACKET> {
+		exp.addChild(time);
+		exp.addChild(literal);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+
+void goal() :
+{
+}
+{
+    left_bracket() <GOAL>
+    pddl_goal()
+    right_bracket()
+}
+
+void pddl_goal() :
+{
+	Expression<String> exp = null;
+	Boolean goal_utilities = false;
+	if (this.isRequirement(RequireKey.GOAL_UTILITIES)
+			&& !this.isRequirement(RequireKey.PREFERENCES)) {
+		this.getRequirements().add(RequireKey.PREFERENCES);
+		goal_utilities = true;
+	}
+
+}
+{
+	try {
+		exp=pre_gd() {
+			this.problem.setGoal(exp);
+			if (goal_utilities) {
+				this.getRequirements().remove(RequireKey.PREFERENCES);
+			}
+	   	}
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+void pddl_const(int type) :
+{
+	Expression<String> conGD;
+}
+{
+	try {
+		left_bracket() <CONSTRAINTS>
+			conGD=pref_con_gd()
+		right_bracket() {
+			if (type == Lexer.PARSER_DOMAIN) {
+				this.domain.setConstraints(conGD);
+			} else {
+				this.problem.setConstraints(conGD);
+			}
+		}
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+}
+
+
+Expression<String> pref_con_gd() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2)
+			exp=and_pref_con_gd()
+	|	LOOKAHEAD(2, {this.isRequirement(RequireKey.UNIVERSAL_PRECONDITIONS)})
+			exp=forall_pref_con_gd()
+	| 	LOOKAHEAD(2, {this.isRequirement(RequireKey.PREFERENCES)})
+			exp=named_pref_con_gd()
+	|	LOOKAHEAD(2)
+			exp=con_gd()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> and_pref_con_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.AND);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <AND>
+		(LOOKAHEAD(2) child=pref_con_gd() {
+			exp.addChild(child);
+		})*
+	end=<RIGHT_BRACKET> {
+        exp.setBegin(begin);
+        exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> named_pref_con_gd() :
+{
+	Expression<String> exp;
+	Symbol<String> pref_name = null;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <PREFERENCE>
+		[pref_name=pref_name()]
+		exp=con_gd()
+	end=<RIGHT_BRACKET> {
+		exp.setPrefName(pref_name);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> forall_pref_con_gd() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FORALL);
+	List<TypedSymbol<String>> typedList;
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET> <FORALL>
+		<LEFT_BRACKET>
+			typedList=typed_list(Lexer.VARIABLE)
+		<RIGHT_BRACKET>
+		child=pref_con_gd()
+	end=<RIGHT_BRACKET> {
+		exp.setQuantifiedVariables(typedList);
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+void metric_spec() :
+{
+	Expression<String> exp;
+}
+{
+	try {
+		(	LOOKAHEAD(3) exp=maximize()
+		| 	LOOKAHEAD(3) exp=minimize()
+		) {
+          	this.problem.setMetric(exp);
+        }
+	} catch(Throwable e) {
+		this.error(e, token.beginLine, token.beginColumn);
+	}
+
+}
+
+Expression<String> maximize() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MAXIMIZE);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		<METRIC>
+		<MAXIMIZE>
+		child=metric_f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> minimize() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MINIMIZE);
+	Expression<String> child;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		<METRIC>
+		<MINIMIZE>
+		child=metric_f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(child);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> metric_f_exp() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=op_metric_f_exp()
+	|	LOOKAHEAD(2) exp=number()
+	|	LOOKAHEAD(2) exp=constant_f_head()
+	|	LOOKAHEAD(2) exp=total_time()
+	|	LOOKAHEAD(2) exp=violated_pref_exp()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> violated_pref_exp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.IS_VIOLATED);
+	Symbol<String> pref_name;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		<IS_VIOLATED>
+		pref_name=pref_name()
+	end=<RIGHT_BRACKET> {
+		exp.setPrefName(pref_name);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> constant_f_head() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FN_HEAD);
+	List<Symbol<String>> args = new ArrayList<Symbol<String>>();
+	Symbol<String> functor, argument;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		functor=functor() {
+		    exp.setSymbol(functor);
+		}
+		(LOOKAHEAD(2) argument=constant(){
+			args.add(argument);
+		})*
+	end=<RIGHT_BRACKET> {
+		exp.setArguments(args);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> total_time() :
+{
+	Expression<String> exp = new Expression<String>(Connector.FN_HEAD);
+	Token t, begin, end;
+}
+{
+	(LOOKAHEAD(3)
+		begin=<LEFT_BRACKET> t=<TOTAL_TIME> end=<RIGHT_BRACKET> {
+		    exp.setBegin(begin);
+		    exp.setEnd(end);
+		}
+| 	LOOKAHEAD(2)
+		t=<TOTAL_TIME>) {
+			exp.setSymbol(new Symbol<String>(SymbolType.FUNCTOR, t.image.toLowerCase(),
+			    t.beginLine, t.beginColumn, t.endLine, t.endColumn));
+			exp.setArguments(new ArrayList<Symbol<String>>());
+			exp.setLocation(exp.getSymbol().getLocation());
+			return exp;
+		}
+}
+
+Expression<String> op_metric_f_exp() :
+{
+	Expression<String> exp;
+}
+{
+	(	LOOKAHEAD(2) exp=add_op_metric_f_exp()
+	|	LOOKAHEAD(2) exp=substract_op_metric_f_exp()
+	| 	LOOKAHEAD(2) exp=multi_op_metric_f_exp()
+	| 	LOOKAHEAD(2) exp=div_op_metric_f_exp()
+	) {
+		return exp;
+	}
+}
+
+Expression<String> add_op_metric_f_exp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.PLUS);
+	Expression<String> op;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		<ADD>
+		op=metric_f_exp() { exp.addChild(op); }
+		(LOOKAHEAD(2) op=metric_f_exp() {
+			exp.addChild(op);
+		})+
+	end=<RIGHT_BRACKET> {
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> substract_op_metric_f_exp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MINUS);
+	Expression<String> op1, op2 = null;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		<SUB>
+		op1=metric_f_exp()
+		[op2=metric_f_exp()]
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		if (op2 != null) exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+Expression<String> div_op_metric_f_exp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.DIVISION);
+	Expression<String> op1, op2;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		<DIV>
+		op1=metric_f_exp()
+		op2=metric_f_exp()
+	end=<RIGHT_BRACKET> {
+		exp.addChild(op1);
+		exp.addChild(op2);
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
+
+
+Expression<String> multi_op_metric_f_exp() :
+{
+	Expression<String> exp = new Expression<String>(Connector.MULTIPLICATION);
+	Expression<String> op;
+	Token begin, end;
+}
+{
+	begin=<LEFT_BRACKET>
+		<MUL>
+		op=metric_f_exp() { exp.addChild(op); }
+		(LOOKAHEAD(2) op=metric_f_exp() {
+			exp.addChild(op);
+		})+
+	end=<RIGHT_BRACKET> {
+		exp.setBegin(begin);
+		exp.setEnd(end);
+		return exp;
+	}
+}
